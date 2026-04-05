@@ -11,3 +11,4 @@ build/
 *.exp
 *.vcxproj*
 CMakeUserPresets.json
+*.zip

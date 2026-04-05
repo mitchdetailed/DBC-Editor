@@ -69,7 +69,13 @@ The `build/Release/` folder will then be self-contained and can be distributed o
 
 ## Precompiled Binaries
 
-Precompiled Windows binaries are available on the [Releases](../../releases) page. Download the `.zip`, extract it, and run `QtDbcTool.exe` — no installation required.
+Precompiled binaries for all platforms are available on the [Releases](../../releases) page — no build tools or Qt installation required.
+
+| Platform | File | Notes |
+|---|---|---|
+| Windows | `QtDbcTool-windows-x64.zip` | Extract and run `QtDbcTool.exe` |
+| Linux | `QtDbcTool-linux-x64.AppImage` | `chmod +x` then run directly |
+| macOS | `QtDbcTool-macos.dmg` | Open and drag to Applications (Apple Silicon) |
 
 ---
 

@@ -21,3 +21,7 @@ add_executable(QtDbcTool WIN32
 )
 
 target_link_libraries(QtDbcTool PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+
+if(APPLE)
+    set_target_properties(QtDbcTool PROPERTIES MACOSX_BUNDLE TRUE)
+endif()
