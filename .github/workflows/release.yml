@@ -48,11 +48,6 @@ jobs:
             qt-arch: clang_64
             artifact-suffix: macos-arm64.dmg
 
-          # ── macOS Intel ─────────────────────────────────────────────────
-          - runs-on: macos-13
-            os-name: macOS x64
-            qt-arch: clang_64
-            artifact-suffix: macos-x64.dmg
 
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +55,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.3'
+          version: '6.7.3'
           arch: ${{ matrix.qt-arch }}
           cache: true
           extra: '--base https://download.qt.io'
