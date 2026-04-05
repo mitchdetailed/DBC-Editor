@@ -26,16 +26,13 @@ jobs:
           # ── Windows x64 ────────────────────────────────────────────────
           - runs-on: windows-latest
             os-name: Windows x64
-            qt-win-packages: qt.qt6.673.win64_msvc2022_64
-            qt-msvc-dir: msvc2022_64
+            qt-arch: win64_msvc2019_64
             artifact-suffix: windows-x64.zip
 
           # ── Windows ARM64 (cross-compiled on x64) ──────────────────────
           - runs-on: windows-latest
             os-name: Windows ARM64
-            qt-win-packages: qt.qt6.673.win64_msvc2022_arm64 qt.qt6.673.win64_msvc2022_64
-            qt-msvc-dir: msvc2022_arm64
-            qt-host-msvc-dir: msvc2022_64
+            qt-arch: win64_msvc2019_arm64
             cmake-arch: ARM64
             artifact-suffix: windows-arm64.zip
 
@@ -55,21 +52,13 @@ jobs:
 
       - name: Install Qt (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $installer = "$env:RUNNER_TEMP\qt-install.exe"
-          Invoke-WebRequest -Uri "https://download.qt.io/official_releases/online_installers/qt-unified-windows-x64-online.exe" -OutFile $installer
-          $pkgs = "${{ matrix.qt-win-packages }}" -split '\s+'
-          & $installer --root "D:\Qt" --accept-licenses --default-answer `
-            --auto-answer "telemetry-question=No" --confirm-command install @pkgs
-          $qtDir = "D:/Qt/6.7.3/${{ matrix.qt-msvc-dir }}"
-          "$qtDir/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "Qt6_DIR=$qtDir/lib/cmake/Qt6" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if ("${{ matrix.qt-host-msvc-dir }}") {
-            $hostDir = "D:/Qt/6.7.3/${{ matrix.qt-host-msvc-dir }}"
-            "$hostDir/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-            "QT_HOST_PATH=$hostDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          }
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          arch: ${{ matrix.qt-arch }}
+          cache: true
+          aqtversion: '==3.2.1'
+          extra: '--base https://download.qt.io'
 
       - name: Install Qt (macOS)
         if: runner.os == 'macOS'
@@ -92,7 +81,6 @@ jobs:
         run: >
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           ${{ matrix.cmake-arch && format('-G "Visual Studio 17 2022" -A {0}', matrix.cmake-arch) || '' }}
-          ${{ env.QT_HOST_PATH && format('-DQT_HOST_PATH={0}', env.QT_HOST_PATH) || '' }}
 
       - name: Build
         run: cmake --build build --config Release
