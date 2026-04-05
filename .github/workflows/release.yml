@@ -97,7 +97,7 @@ jobs:
           printf '[Desktop Entry]\nName=QtDbcEditor\nExec=QtDbcEditor\nIcon=QtDbcEditor\nType=Application\nCategories=Utility;\n' \
             > AppDir/usr/share/applications/QtDbcEditor.desktop
 
-          magick -size 256x256 xc:#2d5a8e \
+          convert -size 256x256 xc:#2d5a8e \
             AppDir/usr/share/icons/hicolor/256x256/apps/QtDbcEditor.png
 
           QMAKE=$(which qmake6 || which qmake) ./linuxdeploy-x86_64.AppImage \
