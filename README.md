@@ -1,4 +1,4 @@
-# QtDbcTool
+# DBC Editor
 
 A general-purpose DBC file editor built with Qt6/C++ for editing CAN database (`.dbc`) files. Designed with CMake for cross-platform compilation.
 
