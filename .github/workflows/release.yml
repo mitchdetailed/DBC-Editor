@@ -133,3 +133,75 @@ jobs:
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
           files: ${{ env.ARTIFACT }}
+
+  # ── Linux ARM64 (QEMU emulation via Docker) ──────────────────────────────
+  # Runs an arm64 Ubuntu container on the x86_64 runner via QEMU binfmt.
+  # Qt is installed from Ubuntu apt (6.2.x) — sufficient for this app.
+  # Expect ~20-40 min build time due to emulation overhead.
+  build-linux-arm64:
+    name: Linux ARM64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Write ARM64 build script
+        run: |
+          cat > /tmp/build-arm64.sh << 'SCRIPT'
+          #!/bin/bash
+          set -e
+
+          apt-get update -y
+          apt-get install -y cmake ninja-build g++ wget \
+            libgl1-mesa-dev libxkbcommon-dev libxcb-cursor-dev \
+            qt6-base-dev imagemagick
+
+          cd /src
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake --build build
+
+          mkdir -p AppDir/usr/bin \
+                   AppDir/usr/share/applications \
+                   AppDir/usr/share/icons/hicolor/256x256/apps
+          cp build/QtDbcEditor AppDir/usr/bin/
+
+          printf '[Desktop Entry]\nName=QtDbcEditor\nExec=QtDbcEditor\nIcon=QtDbcEditor\nType=Application\nCategories=Utility;\n' \
+            > AppDir/usr/share/applications/QtDbcEditor.desktop
+
+          convert -size 256x256 xc:#2d5a8e \
+            AppDir/usr/share/icons/hicolor/256x256/apps/QtDbcEditor.png
+
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-aarch64.AppImage
+          chmod +x linuxdeploy-aarch64.AppImage linuxdeploy-plugin-qt-aarch64.AppImage
+
+          QMAKE=$(which qmake6 2>/dev/null || which qmake) \
+            APPIMAGE_EXTRACT_AND_RUN=1 \
+            ./linuxdeploy-aarch64.AppImage --appdir AppDir --plugin qt --output appimage
+          SCRIPT
+          chmod +x /tmp/build-arm64.sh
+
+      - name: Build and package in ARM64 container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/src" \
+            -v "/tmp/build-arm64.sh:/build-arm64.sh" \
+            -e APPIMAGE_EXTRACT_AND_RUN=1 \
+            ubuntu:22.04 bash /build-arm64.sh
+
+          tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+          artifact="QtDbcEditor-${tag}-linux-aarch64.AppImage"
+          mv "$PWD"/QtDbcEditor*.AppImage "$artifact"
+          echo "ARTIFACT=$artifact" >> $GITHUB_ENV
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
+          generate_release_notes: false
+          files: ${{ env.ARTIFACT }}
