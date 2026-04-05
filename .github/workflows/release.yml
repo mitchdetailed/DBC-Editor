@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -32,13 +33,13 @@ jobs:
           # ── Linux x86_64 ────────────────────────────────────────────────
           - runs-on: ubuntu-22.04
             os-name: Linux
-            qt-arch: ''
+            qt-arch: gcc_64
             artifact-suffix: linux-x86_64.AppImage
 
           # ── macOS Apple Silicon ─────────────────────────────────────────
           - runs-on: macos-latest
             os-name: macOS ARM64
-            qt-arch: clang_64
+            qt-arch: clang_arm64
             artifact-suffix: macos-arm64.dmg
 
           # ── macOS Intel ─────────────────────────────────────────────────
@@ -53,7 +54,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.7.3'
+          version: '6.8.2'
           arch: ${{ matrix.qt-arch }}
           cache: true
 
