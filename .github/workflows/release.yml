@@ -38,7 +38,7 @@ jobs:
           # ── macOS Apple Silicon ─────────────────────────────────────────
           - runs-on: macos-latest
             os-name: macOS ARM64
-            qt-arch: clang_arm64
+            qt-arch: clang_64
             artifact-suffix: macos-arm64.dmg
 
           # ── macOS Intel ─────────────────────────────────────────────────
