@@ -1,0 +1,2 @@
+add dynamically Dragging and dropping function to messages on nodes, signals on messages, and bit positions of signals in bit layout.
+
