@@ -53,18 +53,23 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Qt
+        if: runner.os != 'Linux'
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.7.3'
           arch: ${{ matrix.qt-arch }}
           cache: true
-          aqtversion: '==3.1.0'
+          aqtversion: '==3.2.1'
+          extra: '--base https://download.qt.io'
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxcb-cursor-dev imagemagick
+          sudo apt-get install -y \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools \
+            libgl1-mesa-dev libxkbcommon-dev libxcb-cursor-dev libxcb-xinerama0-dev \
+            imagemagick
 
       - name: Configure
         run: >
