@@ -92,7 +92,7 @@ jobs:
         run: |
           $tag = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { '${{ inputs.tag_name }}' } else { '${{ github.ref_name }}' }
           $artifact = "QtDbcEditor-$tag-${{ matrix.artifact-suffix }}"
-          windeployqt build/Release/QtDbcEditor.exe
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" build/Release/QtDbcEditor.exe
           Compress-Archive -Path build/Release/* -DestinationPath $artifact
           echo "ARTIFACT=$artifact" >> $env:GITHUB_ENV
 
