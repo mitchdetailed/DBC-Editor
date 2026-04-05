@@ -16,20 +16,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs-on: windows-latest
-            os-name: Windows
-            qt-arch: win64_msvc2019_64
-            artifact: QtDbcTool-windows-x64.zip
 
+          # ── Windows x64 ────────────────────────────────────────────────
+          - runs-on: windows-latest
+            os-name: Windows x64
+            qt-arch: win64_msvc2019_64
+            artifact-suffix: windows-x64.zip
+
+          # ── Windows ARM64 ───────────────────────────────────────────────
+          - runs-on: windows-11-arm
+            os-name: Windows ARM64
+            qt-arch: win64_msvc2022_arm64
+            artifact-suffix: windows-arm64.zip
+
+          # ── Linux x86_64 ────────────────────────────────────────────────
           - runs-on: ubuntu-22.04
             os-name: Linux
             qt-arch: gcc_64
-            artifact: QtDbcTool-linux-x64.AppImage
+            artifact-suffix: linux-x86_64.AppImage
 
+          # ── macOS Apple Silicon ─────────────────────────────────────────
           - runs-on: macos-latest
-            os-name: macOS
+            os-name: macOS ARM64
             qt-arch: clang_arm64
-            artifact: QtDbcTool-macos.dmg
+            artifact-suffix: macos-arm64.dmg
+
+          # ── macOS Intel ─────────────────────────────────────────────────
+          - runs-on: macos-13
+            os-name: macOS x64
+            qt-arch: clang_64
+            artifact-suffix: macos-x64.dmg
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +61,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxcb-cursor-dev
+          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev libxcb-cursor-dev imagemagick
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -58,8 +74,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          windeployqt build/Release/QtDbcTool.exe
-          Compress-Archive -Path build/Release/* -DestinationPath QtDbcTool-windows-x64.zip
+          $artifact = "QtDbcEditor-${{ github.ref_name }}-${{ matrix.artifact-suffix }}"
+          windeployqt build/Release/QtDbcEditor.exe
+          Compress-Archive -Path build/Release/* -DestinationPath $artifact
+          echo "ARTIFACT=$artifact" >> $env:GITHUB_ENV
 
       # ── Linux ─────────────────────────────────────────────────────────────
       - name: Package (Linux)
@@ -67,33 +85,37 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
+          artifact="QtDbcEditor-${{ github.ref_name }}-${{ matrix.artifact-suffix }}"
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
 
           mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
-          cp build/QtDbcTool AppDir/usr/bin/
+          cp build/QtDbcEditor AppDir/usr/bin/
 
-          printf '[Desktop Entry]\nName=QtDbcTool\nExec=QtDbcTool\nIcon=QtDbcTool\nType=Application\nCategories=Utility;\n' \
-            > AppDir/usr/share/applications/QtDbcTool.desktop
+          printf '[Desktop Entry]\nName=QtDbcEditor\nExec=QtDbcEditor\nIcon=QtDbcEditor\nType=Application\nCategories=Utility;\n' \
+            > AppDir/usr/share/applications/QtDbcEditor.desktop
 
-          convert -size 256x256 xc:#2d5a8e \
-            AppDir/usr/share/icons/hicolor/256x256/apps/QtDbcTool.png
+          magick -size 256x256 xc:#2d5a8e \
+            AppDir/usr/share/icons/hicolor/256x256/apps/QtDbcEditor.png
 
-          QMAKE=$(which qmake) ./linuxdeploy-x86_64.AppImage \
+          QMAKE=$(which qmake6 || which qmake) ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir --plugin qt --output appimage
 
-          mv QtDbcTool*.AppImage QtDbcTool-linux-x64.AppImage
+          mv QtDbcEditor*.AppImage "$artifact"
+          echo "ARTIFACT=$artifact" >> $GITHUB_ENV
 
       # ── macOS ─────────────────────────────────────────────────────────────
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          macdeployqt build/QtDbcTool.app -dmg
-          mv build/QtDbcTool.dmg QtDbcTool-macos.dmg
+          artifact="QtDbcEditor-${{ github.ref_name }}-${{ matrix.artifact-suffix }}"
+          macdeployqt build/QtDbcEditor.app -dmg
+          mv build/QtDbcEditor.dmg "$artifact"
+          echo "ARTIFACT=$artifact" >> $GITHUB_ENV
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: ${{ matrix.artifact }}
+          files: ${{ env.ARTIFACT }}

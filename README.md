@@ -44,7 +44,7 @@ cd DBC-Editor
 Replace `C:/Qt/6.x.x/msvc2019_64` with the actual path to your Qt6 installation.
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2019_64"
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="C:/Qt/6.7.2/msvc2019_64"
 ```
 
 ### 3. Build
@@ -53,14 +53,14 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2
 cmake --build build --config Release
 ```
 
-The compiled executable will be placed in `build/Release/QtDbcTool.exe`.
+The compiled executable will be placed in `build/Release/QtDbcEditor.exe`.
 
 ### 4. Deploy Qt dependencies (Windows)
 
 After building, run `windeployqt` to copy the required Qt DLLs alongside the executable:
 
 ```bash
-"C:/Qt/6.x.x/msvc2019_64/bin/windeployqt.exe" build/Release/QtDbcTool.exe
+"C:/Qt/6.7.2/msvc2019_64/bin/windeployqt.exe" build/Release/QtDbcEditor.exe
 ```
 
 The `build/Release/` folder will then be self-contained and can be distributed or run without a Qt install.
@@ -71,11 +71,13 @@ The `build/Release/` folder will then be self-contained and can be distributed o
 
 Precompiled binaries for all platforms are available on the [Releases](../../releases) page — no build tools or Qt installation required.
 
-| Platform | File | Notes |
-|---|---|---|
-| Windows | `QtDbcTool-windows-x64.zip` | Extract and run `QtDbcTool.exe` |
-| Linux | `QtDbcTool-linux-x64.AppImage` | `chmod +x` then run directly |
-| macOS | `QtDbcTool-macos.dmg` | Open and drag to Applications (Apple Silicon) |
+| File | Platform |
+|---|---|
+| `QtDbcEditor-vX.X.X-windows-x64.zip` | Windows 10/11 (x64) — extract and run `QtDbcEditor.exe` |
+| `QtDbcEditor-vX.X.X-windows-arm64.zip` | Windows 11 (ARM64, e.g. Surface Pro X, Snapdragon) |
+| `QtDbcEditor-vX.X.X-linux-x86_64.AppImage` | Ubuntu 22.04+ / most Linux distros — `chmod +x` then run |
+| `QtDbcEditor-vX.X.X-macos-arm64.dmg` | macOS (Apple Silicon — M1/M2/M3/M4) |
+| `QtDbcEditor-vX.X.X-macos-x64.dmg` | macOS (Intel) |
 
 ---
 
