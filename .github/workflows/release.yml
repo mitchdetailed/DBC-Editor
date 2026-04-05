@@ -26,41 +26,58 @@ jobs:
           # ── Windows x64 ────────────────────────────────────────────────
           - runs-on: windows-latest
             os-name: Windows x64
-            qt-arch: win64_msvc2022_64
+            qt-win-packages: qt.qt6.673.win64_msvc2022_64
+            qt-msvc-dir: msvc2022_64
             artifact-suffix: windows-x64.zip
 
           # ── Windows ARM64 (cross-compiled on x64) ──────────────────────
           - runs-on: windows-latest
             os-name: Windows ARM64
-            qt-arch: win64_msvc2022_arm64
+            qt-win-packages: qt.qt6.673.win64_msvc2022_arm64 qt.qt6.673.win64_msvc2022_64
+            qt-msvc-dir: msvc2022_arm64
+            qt-host-msvc-dir: msvc2022_64
             cmake-arch: ARM64
             artifact-suffix: windows-arm64.zip
 
           # ── Linux x86_64 ────────────────────────────────────────────────
           - runs-on: ubuntu-22.04
             os-name: Linux
-            qt-arch: gcc_64
             artifact-suffix: linux-x86_64.AppImage
 
           # ── macOS Apple Silicon ─────────────────────────────────────────
           - runs-on: macos-latest
             os-name: macOS ARM64
-            qt-arch: clang_64
             artifact-suffix: macos-arm64.dmg
 
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt
-        if: runner.os != 'Linux'
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.7.3'
-          arch: ${{ matrix.qt-arch }}
-          cache: true
-          aqtversion: '==3.2.1'
-          extra: '--base https://download.qt.io'
+      - name: Install Qt (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\qt-install.exe"
+          Invoke-WebRequest -Uri "https://download.qt.io/official_releases/online_installers/qt-unified-windows-x64-online.exe" -OutFile $installer
+          $pkgs = "${{ matrix.qt-win-packages }}" -split '\s+'
+          & $installer --root "D:\Qt" --accept-licenses --default-answer `
+            --auto-answer "telemetry-question=No" --confirm-command install @pkgs
+          $qtDir = "D:/Qt/6.7.3/${{ matrix.qt-msvc-dir }}"
+          "$qtDir/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "Qt6_DIR=$qtDir/lib/cmake/Qt6" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ("${{ matrix.qt-host-msvc-dir }}") {
+            $hostDir = "D:/Qt/6.7.3/${{ matrix.qt-host-msvc-dir }}"
+            "$hostDir/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            "QT_HOST_PATH=$hostDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Install Qt (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install qt
+          QT_PREFIX=$(brew --prefix qt)
+          echo "${QT_PREFIX}/bin" >> $GITHUB_PATH
+          echo "Qt6_DIR=${QT_PREFIX}/lib/cmake/Qt6" >> $GITHUB_ENV
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -75,6 +92,7 @@ jobs:
         run: >
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           ${{ matrix.cmake-arch && format('-G "Visual Studio 17 2022" -A {0}', matrix.cmake-arch) || '' }}
+          ${{ env.QT_HOST_PATH && format('-DQT_HOST_PATH={0}', env.QT_HOST_PATH) || '' }}
 
       - name: Build
         run: cmake --build build --config Release
@@ -157,32 +175,42 @@ jobs:
           set -e
 
           apt-get update -y
-          apt-get install -y cmake ninja-build g++ wget \
+          apt-get install -y cmake ninja-build g++ \
             libgl1-mesa-dev libxkbcommon-dev libxcb-cursor-dev \
-            qt6-base-dev imagemagick
+            qt6-base-dev patchelf
 
           cd /src
           cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
           cmake --build build
 
-          mkdir -p AppDir/usr/bin \
-                   AppDir/usr/share/applications \
-                   AppDir/usr/share/icons/hicolor/256x256/apps
-          cp build/QtDbcEditor AppDir/usr/bin/
+          # Bundle binary + Qt shared libs into a relocatable directory
+          mkdir -p bundle/lib
+          cp build/QtDbcEditor bundle/
 
-          printf '[Desktop Entry]\nName=QtDbcEditor\nExec=QtDbcEditor\nIcon=QtDbcEditor\nType=Application\nCategories=Utility;\n' \
-            > AppDir/usr/share/applications/QtDbcEditor.desktop
+          # Copy all libQt6* and their transitive Qt deps
+          ldd build/QtDbcEditor \
+            | awk '/libQt6/ {print $3}' \
+            | xargs -I{} cp {} bundle/lib/
 
-          convert -size 256x256 xc:#2d5a8e \
-            AppDir/usr/share/icons/hicolor/256x256/apps/QtDbcEditor.png
+          # Also copy platform plugin needed at runtime
+          QT_PLUGIN_DIR=$(qmake6 -query QT_INSTALL_PLUGINS 2>/dev/null || qmake -query QT_INSTALL_PLUGINS)
+          mkdir -p bundle/platforms
+          cp "${QT_PLUGIN_DIR}/platforms/libqxcb.so" bundle/platforms/ 2>/dev/null || true
+          cp "${QT_PLUGIN_DIR}/platforms/libqoffscreen.so" bundle/platforms/ 2>/dev/null || true
 
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-aarch64.AppImage
-          chmod +x linuxdeploy-aarch64.AppImage linuxdeploy-plugin-qt-aarch64.AppImage
+          # Patch RPATH so the binary finds bundled libs
+          patchelf --set-rpath '$ORIGIN/lib' bundle/QtDbcEditor
 
-          QMAKE=$(which qmake6 2>/dev/null || which qmake) \
-            APPIMAGE_EXTRACT_AND_RUN=1 \
-            ./linuxdeploy-aarch64.AppImage --appdir AppDir --plugin qt --output appimage
+          # Launcher script
+          cat > bundle/run.sh << 'EOF'
+          #!/bin/bash
+          DIR="$(dirname "$(readlink -f "$0")")"
+          export QT_QPA_PLATFORM_PLUGIN_PATH="$DIR/platforms"
+          exec "$DIR/QtDbcEditor" "$@"
+          EOF
+          chmod +x bundle/run.sh
+
+          tar -czf /src/QtDbcEditor-linux-aarch64.tar.gz -C /src bundle/
           SCRIPT
           chmod +x /tmp/build-arm64.sh
 
@@ -191,12 +219,11 @@ jobs:
           docker run --rm --platform linux/arm64 \
             -v "$PWD:/src" \
             -v "/tmp/build-arm64.sh:/build-arm64.sh" \
-            -e APPIMAGE_EXTRACT_AND_RUN=1 \
             ubuntu:22.04 bash /build-arm64.sh
 
           tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
-          artifact="QtDbcEditor-${tag}-linux-aarch64.AppImage"
-          mv "$PWD"/QtDbcEditor*.AppImage "$artifact"
+          artifact="QtDbcEditor-${tag}-linux-aarch64.tar.gz"
+          mv "$PWD/QtDbcEditor-linux-aarch64.tar.gz" "$artifact"
           echo "ARTIFACT=$artifact" >> $GITHUB_ENV
 
       - name: Upload to Release
