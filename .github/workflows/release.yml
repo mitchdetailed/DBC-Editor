@@ -58,7 +58,7 @@ jobs:
           version: '6.7.3'
           arch: ${{ matrix.qt-arch }}
           cache: true
-          extra: '--base https://download.qt.io'
+          aqtversion: '==3.1.0'
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
