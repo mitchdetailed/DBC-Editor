@@ -44,6 +44,7 @@
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QSignalBlocker>
+#include <QStyledItemDelegate>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QGroupBox>
@@ -510,6 +511,38 @@ protected:
         // Allow Up/Down to navigate the open popup or cycle while closed.
         QComboBox::keyPressEvent(e);
     }
+};
+
+// Delegate for the "Message" column of the signals-view table.
+// Creates an editor combo box only when the user activates a cell,
+// so the table builds instantly instead of creating thousands of real widgets.
+class MessagePickerDelegate : public QStyledItemDelegate {
+public:
+    explicit MessagePickerDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    void setMessageNames(const QStringList& names) { msgNames_ = names; }
+
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&,
+                          const QModelIndex&) const override {
+        auto* combo = new FocusComboBox(parent);
+        combo->addItems(msgNames_);
+        return combo;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
+        static_cast<QComboBox*>(editor)->setCurrentText(
+            index.data(Qt::DisplayRole).toString());
+    }
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model,
+                      const QModelIndex& index) const override {
+        model->setData(index, static_cast<QComboBox*>(editor)->currentText(),
+                       Qt::EditRole);
+    }
+
+private:
+    QStringList msgNames_;
 };
 
 // Dialog for editing a (name, rawValue→label) value table, used for both
@@ -1249,6 +1282,46 @@ void MainWindow::createLayout()
         }
     });
 
+    // Column 11 uses a delegate instead of per-row combo box widgets.
+    auto* msgPickerDelegate = new MessagePickerDelegate(signalsViewTable_);
+    signalsViewTable_->setItemDelegateForColumn(11, msgPickerDelegate);
+
+    connect(signalsViewTable_, &QTableWidget::itemChanged, this,
+            [this](QTableWidgetItem* item) {
+                if (item->column() != 11) { return; }
+                const int row = item->row();
+                const QTableWidgetItem* nameItem = signalsViewTable_->item(row, 0);
+                if (!nameItem) { return; }
+                const QString sigName    = nameItem->text();
+                const QString oldMsgName = nameItem->data(Qt::UserRole).toString();
+                const QString newMsgName = item->text();
+                if (newMsgName == oldMsgName || newMsgName.isEmpty()) { return; }
+
+                DbcSignal movedSig;
+                bool found = false;
+                for (DbcMessage& m : database_.messages) {
+                    if (m.name != oldMsgName) { continue; }
+                    for (int i = 0; i < m.signalList.size(); ++i) {
+                        if (m.signalList.at(i).name == sigName) {
+                            movedSig = m.signalList.takeAt(i);
+                            found = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                if (!found) { return; }
+
+                for (DbcMessage& m : database_.messages) {
+                    if (m.name == newMsgName) {
+                        m.signalList.append(movedSig);
+                        break;
+                    }
+                }
+                isDirty_ = true;
+                refreshSignalsView();
+            });
+
     // ── Value Tables view (global named VAL_TABLE_ definitions) ─────────────
     auto* vtWidget = new QWidget(this);
     auto* vtMainLayout = new QVBoxLayout(vtWidget);
@@ -1688,8 +1761,8 @@ void MainWindow::refreshAll()
     refreshSignalTable();
     refreshMultiplexorSignalDropdown();
     refreshNodesView();
-    refreshMessagesView();
-    refreshSignalsView();
+    if (currentViewMode_ == ViewMode::Messages) { refreshMessagesView(); }
+    if (currentViewMode_ == ViewMode::Signals)  { refreshSignalsView(); }
     refreshValueTablesView();
     refreshAttributesView();
 
@@ -1707,6 +1780,7 @@ void MainWindow::refreshAll()
 
 void MainWindow::refreshHierarchy()
 {
+    hierarchyTree_->setUpdatesEnabled(false);
     hierarchyTree_->clear();
 
     auto* rootNodes = new QTreeWidgetItem(hierarchyTree_, QStringList{"Nodes"});
@@ -1733,6 +1807,7 @@ void MainWindow::refreshHierarchy()
     }
 
     hierarchyTree_->expandAll();
+    hierarchyTree_->setUpdatesEnabled(true);
 }
 
 void MainWindow::refreshMessageTable()
@@ -2290,6 +2365,7 @@ void MainWindow::refreshMessagesView()
 {
     const bool wasSorting = messagesViewTable_->isSortingEnabled();
     messagesViewTable_->setSortingEnabled(false);
+    messagesViewTable_->setUpdatesEnabled(false);
     messagesViewTable_->clearContents();
     messagesViewTable_->setRowCount(database_.messages.size());
     for (int row = 0; row < database_.messages.size(); ++row) {
@@ -2312,24 +2388,31 @@ void MainWindow::refreshMessagesView()
         }
     }
     messagesViewTable_->setSortingEnabled(wasSorting);
+    messagesViewTable_->setUpdatesEnabled(true);
 }
 
 void MainWindow::refreshSignalsView()
 {
+    auto* msgPickerDelegate =
+        static_cast<MessagePickerDelegate*>(signalsViewTable_->itemDelegateForColumn(11));
+
     const bool wasSorting = signalsViewTable_->isSortingEnabled();
     signalsViewTable_->setSortingEnabled(false);
     int totalSignals = 0;
     for (const DbcMessage& msg : database_.messages) {
         totalSignals += msg.signalList.size();
     }
+
+    // Update the delegate's name list before populating rows.
+    QStringList msgNames;
+    for (const DbcMessage& m : database_.messages) { msgNames.append(m.name); }
+    if (msgPickerDelegate) { msgPickerDelegate->setMessageNames(msgNames); }
+
+    // Block itemChanged so the signal-move handler doesn't fire during rebuild.
+    signalsViewTable_->blockSignals(true);
     signalsViewTable_->clearContents();
     signalsViewTable_->setRowCount(totalSignals);
-
-    // Build list of all message names once for the combo boxes.
-    QStringList msgNames;
-    for (const DbcMessage& m : database_.messages) {
-        msgNames.append(m.name);
-    }
+    signalsViewTable_->setUpdatesEnabled(false);
 
     int row = 0;
     for (const DbcMessage& msg : database_.messages) {
@@ -2357,51 +2440,15 @@ void MainWindow::refreshSignalsView()
                 ci->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
                 signalsViewTable_->setItem(row, 10, ci);
             }
-
-            // Col 11 – message picker combo box
-            auto* msgCombo = new FocusComboBox(signalsViewTable_);
-            msgCombo->addItems(msgNames);
-            msgCombo->setCurrentText(msg.name);
-            // Placeholder item so the combo still participates in sorting
+            // Col 11 – plain text item; the delegate creates the combo on edit.
             signalsViewTable_->setItem(row, 11, new QTableWidgetItem(msg.name));
-            signalsViewTable_->setCellWidget(row, 11, msgCombo);
-
-            connect(msgCombo, &QComboBox::currentTextChanged,
-                    this, [this, sigName = sig.name, oldMsgName = msg.name](const QString& newMsgName) {
-                if (newMsgName == oldMsgName || newMsgName.isEmpty()) { return; }
-
-                // Find and remove the signal from the old message.
-                DbcSignal movedSig;
-                bool found = false;
-                for (DbcMessage& m : database_.messages) {
-                    if (m.name != oldMsgName) { continue; }
-                    for (int i = 0; i < m.signalList.size(); ++i) {
-                        if (m.signalList.at(i).name == sigName) {
-                            movedSig = m.signalList.takeAt(i);
-                            found = true;
-                            break;
-                        }
-                    }
-                    break;
-                }
-                if (!found) { return; }
-
-                // Append to new message.
-                for (DbcMessage& m : database_.messages) {
-                    if (m.name == newMsgName) {
-                        m.signalList.append(movedSig);
-                        break;
-                    }
-                }
-                isDirty_ = true;
-                // Rebuild the view so UserRole data and combo states stay consistent.
-                refreshSignalsView();
-            });
 
             ++row;
         }
     }
+    signalsViewTable_->blockSignals(false);
     signalsViewTable_->setSortingEnabled(wasSorting);
+    signalsViewTable_->setUpdatesEnabled(true);
 }
 
 void MainWindow::setCurrentMessageIndex(int index)

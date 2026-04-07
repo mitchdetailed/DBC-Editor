@@ -89,6 +89,7 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
     // Built-in attribute names managed internally — not surfaced to the user
     static const QStringList kReservedAttrNames{"BusType", "DBName", "GenMsgCycleTime"};
     QHash<QString, QString> attrDefaults;   // name → raw default string
+    QHash<quint32, int> msgByRawId;            // rawId → index in database.messages
 
     int currentMessageIndex = -1;
     int lineNo = 0;
@@ -128,58 +129,51 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
                 const quint32 rawId = static_cast<quint32>(valueMatch.captured(1).toULongLong());
                 const QString sigName = valueMatch.captured(2);
                 const QString valueDefs = valueMatch.captured(3).trimmed();
-                for (DbcMessage& message : database.messages) {
-                    if (rawIdFromMessage(message) == rawId) {
-                        for (DbcSignal& dbcSig : message.signalList) {
-                            if (dbcSig.name == sigName) {
-                                dbcSig.valueEntries = parseValueEntries(valueDefs);
-                                break;
-                            }
+                const int idx = msgByRawId.value(rawId, -1);
+                if (idx >= 0) {
+                    for (DbcSignal& dbcSig : database.messages[idx].signalList) {
+                        if (dbcSig.name == sigName) {
+                            dbcSig.valueEntries = parseValueEntries(valueDefs);
+                            break;
                         }
-                        break;
                     }
                 }
             }
             continue;
         }
 
-        const auto messageCommentMatch = messageCommentRegex.match(line);
-        if (messageCommentMatch.hasMatch()) {
-            const quint32 rawId = static_cast<quint32>(messageCommentMatch.captured(1).toULongLong());
-            QString commentText = messageCommentMatch.captured(2);
-            commentText.replace("\\n", "\n");      // unescape newlines
-            commentText.replace("\\\\", "\\");    // unescape backslashes
-            commentText.replace("\\\"", "\"");     // unescape quotes
-            for (DbcMessage& message : database.messages) {
-                if (rawIdFromMessage(message) == rawId) {
-                    message.comment = commentText;
-                    break;
-                }
+        if (line.startsWith("CM_")) {
+            const auto messageCommentMatch = messageCommentRegex.match(line);
+            if (messageCommentMatch.hasMatch()) {
+                const quint32 rawId = static_cast<quint32>(messageCommentMatch.captured(1).toULongLong());
+                QString commentText = messageCommentMatch.captured(2);
+                commentText.replace("\\n", "\n");      // unescape newlines
+                commentText.replace("\\\\", "\\");    // unescape backslashes
+                commentText.replace("\\\"", "\"");     // unescape quotes
+                const int idx = msgByRawId.value(rawId, -1);
+                if (idx >= 0) { database.messages[idx].comment = commentText; }
+                continue;
             }
-            continue;
-        }
 
-        const auto signalCommentMatch = signalCommentRegex.match(line);
-        if (signalCommentMatch.hasMatch()) {
-            const quint32 rawId = static_cast<quint32>(signalCommentMatch.captured(1).toULongLong());
-            const QString signalName = signalCommentMatch.captured(2);
-            QString commentText = signalCommentMatch.captured(3);
-            commentText.replace("\\n", "\n");      // unescape newlines
-            commentText.replace("\\\\", "\\");    // unescape backslashes
-            commentText.replace("\\\"", "\"");     // unescape quotes
-
-            for (DbcMessage& message : database.messages) {
-                if (rawIdFromMessage(message) == rawId) {
-                    for (DbcSignal& dbcSig : message.signalList) {
+            const auto signalCommentMatch = signalCommentRegex.match(line);
+            if (signalCommentMatch.hasMatch()) {
+                const quint32 rawId = static_cast<quint32>(signalCommentMatch.captured(1).toULongLong());
+                const QString signalName = signalCommentMatch.captured(2);
+                QString commentText = signalCommentMatch.captured(3);
+                commentText.replace("\\n", "\n");      // unescape newlines
+                commentText.replace("\\\\", "\\");    // unescape backslashes
+                commentText.replace("\\\"", "\"");     // unescape quotes
+                const int idx = msgByRawId.value(rawId, -1);
+                if (idx >= 0) {
+                    for (DbcSignal& dbcSig : database.messages[idx].signalList) {
                         if (dbcSig.name == signalName) {
                             dbcSig.comment = commentText;
                             break;
                         }
                     }
-                    break;
                 }
+                continue;
             }
-            continue;
         }
 
         // BA_DEF_DEF_
@@ -229,17 +223,15 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
             continue;
         }
 
-        const auto cycleMatch = cycleRegex.match(line);
-        if (cycleMatch.hasMatch()) {
-            const quint32 rawId = static_cast<quint32>(cycleMatch.captured(1).toULongLong());
-            const int cycleMs = cycleMatch.captured(2).toInt();
-            for (DbcMessage& message : database.messages) {
-                if (rawIdFromMessage(message) == rawId) {
-                    message.cycleTimeMs = cycleMs;
-                    break;
-                }
+        if (line.startsWith("BA_")) {
+            const auto cycleMatch = cycleRegex.match(line);
+            if (cycleMatch.hasMatch()) {
+                const quint32 rawId = static_cast<quint32>(cycleMatch.captured(1).toULongLong());
+                const int cycleMs = cycleMatch.captured(2).toInt();
+                const int idx = msgByRawId.value(rawId, -1);
+                if (idx >= 0) { database.messages[idx].cycleTimeMs = cycleMs; }
+                continue;
             }
-            continue;
         }
 
         if (line.startsWith("BU_")) {
@@ -268,6 +260,7 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
 
             database.messages.append(message);
             currentMessageIndex = database.messages.size() - 1;
+            msgByRawId.insert(rawIdFromMessage(database.messages.last()), currentMessageIndex);
             continue;
         }
 

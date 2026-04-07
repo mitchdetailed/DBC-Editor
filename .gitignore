@@ -12,3 +12,4 @@ build/
 *.vcxproj*
 CMakeUserPresets.json
 *.zip
+reference file/
