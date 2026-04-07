@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
@@ -21,6 +22,7 @@ struct DbcNode {
     QString name;
     QString address;
     QString comment;
+    QMap<QString, QString> attrValues;  // attribute name → raw value string
 };
 
 struct DbcSignal {
@@ -40,6 +42,7 @@ struct DbcSignal {
     QList<DbcValueEntry> valueEntries;
     QString comment;
     QStringList receivers;
+    QMap<QString, QString> attrValues;  // attribute name → raw value string
 };
 
 struct DbcMessage {
@@ -51,6 +54,7 @@ struct DbcMessage {
     QString transmitter;
     QString comment;
     QVector<DbcSignal> signalList;
+    QMap<QString, QString> attrValues;  // attribute name → raw value string
 };
 
 struct DbcAttributeDef {

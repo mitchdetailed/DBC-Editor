@@ -17,6 +17,7 @@ class QScrollArea;
 class QLineEdit;
 class QStackedWidget;
 class QTreeWidget;
+class QLabel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -142,6 +143,7 @@ private:
     QLineEdit*      attrDefaultStrEdit_    = nullptr;
     QComboBox*      attrEnumDefaultCombo_  = nullptr;
     QTableWidget*   attrEnumTable_         = nullptr;
+    QLabel*         attrValidationLabel_   = nullptr;
     int             currentAttrIndex_      = -1;
     bool            attrFormUpdating_      = false;
 

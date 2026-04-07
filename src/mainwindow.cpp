@@ -41,6 +41,7 @@
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QSignalBlocker>
@@ -546,6 +547,193 @@ private:
     QStringList msgNames_;
 };
 
+// Dialog for editing per-object attribute values (BA_ lines).
+// Shows one row per applicable DbcAttributeDef; uses an appropriate editor widget per type.
+// Enum values are stored internally as their integer index string (matches DBC BA_ format).
+class ObjectAttrDialog : public QDialog
+{
+public:
+    explicit ObjectAttrDialog(const QString& title,
+                              const QList<DbcAttributeDef>& defs,
+                              const QMap<QString, QString>& current,
+                              QWidget* parent = nullptr)
+        : QDialog(parent)
+    {
+        setWindowTitle(title);
+        setMinimumWidth(460);
+        resize(460, 380);
+
+        auto* outerLayout = new QVBoxLayout(this);
+
+        auto* scroll = new QScrollArea(this);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+
+        auto* container = new QWidget;
+        auto* form = new QFormLayout(container);
+        form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+        form->setContentsMargins(8, 8, 8, 8);
+
+        for (const DbcAttributeDef& def : defs) {
+            const QString stored = current.value(def.name, def.defaultValue);
+            QWidget* editor = nullptr;
+
+            if (def.valueType == DbcAttributeDef::ValueType::Enumeration) {
+                auto* combo = new QComboBox(container);
+                combo->addItems(def.enumValues);
+                bool ok = false;
+                const int idx = stored.toInt(&ok);
+                if (ok && idx >= 0 && idx < def.enumValues.size())
+                    combo->setCurrentIndex(idx);
+                editors_.append({def.name, def.valueType, {}, {}, nullptr, combo});
+                editor = combo;
+            } else {
+                auto* le = new QLineEdit(stored, container);
+
+                // Character-level validator (type-specific)
+                if (def.valueType == DbcAttributeDef::ValueType::Integer) {
+                    le->setValidator(new QRegularExpressionValidator(
+                        QRegularExpression(R"RE(-?\d*)RE"), le));
+                } else if (def.valueType == DbcAttributeDef::ValueType::Hex) {
+                    // Allow plain digits or 0x-prefixed hex
+                    le->setValidator(new QRegularExpressionValidator(
+                        QRegularExpression(R"RE(-?(?:0[xX])?[0-9A-Fa-f]*)RE"), le));
+                } else if (def.valueType == DbcAttributeDef::ValueType::Float) {
+                    le->setValidator(new QDoubleValidator(le));
+                }
+
+                // On focus-out / Enter: validate format and range
+                if (def.valueType != DbcAttributeDef::ValueType::String) {
+                    const QString capName = def.name;
+                    const auto    capVt   = def.valueType;
+                    const QString capMin  = def.minimum;
+                    const QString capMax  = def.maximum;
+                    connect(le, &QLineEdit::editingFinished, this,
+                            [this, le, capName, capVt, capMin, capMax]() {
+                        const QString valStr = le->text().trimmed();
+                        if (valStr.isEmpty()) { return; }
+                        QString errMsg;
+                        if (capVt == DbcAttributeDef::ValueType::Float) {
+                            bool ok = false;
+                            const double v = valStr.toDouble(&ok);
+                            if (!ok) {
+                                errMsg = QString("'%1': \"" + valStr + "\" is not a valid floating-point number.").arg(capName);
+                            } else if (!capMin.isEmpty() && !capMax.isEmpty()) {
+                                bool okMn = false, okMx = false;
+                                const double mnV = capMin.toDouble(&okMn);
+                                const double mxV = capMax.toDouble(&okMx);
+                                if (okMn && okMx && (v < mnV || v > mxV))
+                                    errMsg = QString("'%1': value %2 is outside the allowed range [%3, %4].")
+                                        .arg(capName, valStr, capMin, capMax);
+                            }
+                        } else {
+                            bool ok = false;
+                            const qlonglong v = valStr.toLongLong(&ok, 0);
+                            if (!ok) {
+                                const QString typeName = (capVt == DbcAttributeDef::ValueType::Hex)
+                                    ? QString("hexadecimal integer (e.g. 0x1F or 31)")
+                                    : QString("integer");
+                                errMsg = QString("'%1': \"" + valStr + "\" is not a valid %2.").arg(capName, typeName);
+                            } else if (!capMin.isEmpty() && !capMax.isEmpty()) {
+                                bool okMn = false, okMx = false;
+                                const qlonglong mnV = capMin.toLongLong(&okMn, 0);
+                                const qlonglong mxV = capMax.toLongLong(&okMx, 0);
+                                if (okMn && okMx && (v < mnV || v > mxV))
+                                    errMsg = QString("'%1': value %2 is outside the allowed range [%3, %4].")
+                                        .arg(capName, valStr, capMin, capMax);
+                            }
+                        }
+                        if (!errMsg.isEmpty()) {
+                            // Defer the popup so we don't re-enter the event loop
+                            // inside editingFinished, which can cause double-firing.
+                            QTimer::singleShot(0, this, [this, le, errMsg]() {
+                                QMessageBox::warning(this, "Invalid Value", errMsg);
+                                le->setFocus();
+                                le->selectAll();
+                            });
+                        }
+                    });
+                }
+
+                editors_.append({def.name, def.valueType, def.minimum, def.maximum, le, nullptr});
+                editor = le;
+            }
+            if (editor)
+                form->addRow(def.name + ":", editor);
+        }
+
+        if (defs.isEmpty()) {
+            form->addRow(new QLabel("No attribute definitions for this object type.", container));
+        }
+
+        scroll->setWidget(container);
+        outerLayout->addWidget(scroll);
+
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+        connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
+            // Validate each numeric entry is within its allowed range.
+            for (const EditorEntry& e : editors_) {
+                if (!e.lineEdit) { continue; } // enum handled by combo bounds
+                if (e.minimum.isEmpty() || e.maximum.isEmpty()) { continue; }
+                const QString valStr = e.lineEdit->text().trimmed();
+                QString errMsg;
+                if (e.valueType == DbcAttributeDef::ValueType::Float) {
+                    bool okV = false, okMn = false, okMx = false;
+                    const double v  = valStr.toDouble(&okV);
+                    const double mn = e.minimum.toDouble(&okMn);
+                    const double mx = e.maximum.toDouble(&okMx);
+                    if (okV && okMn && okMx && (v < mn || v > mx))
+                        errMsg = QString("'%1': value %2 is outside the allowed range [%3, %4].")
+                            .arg(e.name, valStr, e.minimum, e.maximum);
+                } else {
+                    // Integer or Hex (base-0 auto-detects 0x prefix)
+                    bool okV = false, okMn = false, okMx = false;
+                    const qlonglong v  = valStr.toLongLong(&okV, 0);
+                    const qlonglong mn = e.minimum.toLongLong(&okMn, 0);
+                    const qlonglong mx = e.maximum.toLongLong(&okMx, 0);
+                    if (okV && okMn && okMx && (v < mn || v > mx))
+                        errMsg = QString("'%1': value %2 is outside the allowed range [%3, %4].")
+                            .arg(e.name, valStr, e.minimum, e.maximum);
+                }
+                if (!errMsg.isEmpty()) {
+                    QMessageBox::warning(this, "Value Out of Range", errMsg);
+                    e.lineEdit->setFocus();
+                    e.lineEdit->selectAll();
+                    return;
+                }
+            }
+            accept();
+        });
+        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+        outerLayout->addWidget(buttons);
+    }
+
+    QMap<QString, QString> result() const {
+        QMap<QString, QString> out;
+        for (const EditorEntry& e : editors_) {
+            if (e.valueType == DbcAttributeDef::ValueType::Enumeration) {
+                out[e.name] = QString::number(e.combo->currentIndex());
+            } else {
+                out[e.name] = e.lineEdit->text().trimmed();
+            }
+        }
+        return out;
+    }
+
+private:
+    struct EditorEntry {
+        QString name;
+        DbcAttributeDef::ValueType valueType;
+        QString minimum;   // empty for String/Enumeration
+        QString maximum;
+        QLineEdit* lineEdit = nullptr;
+        QComboBox* combo    = nullptr;
+    };
+    QVector<EditorEntry> editors_;
+};
+
 // Dialog for editing a (name, rawValue→label) value table, used for both
 // per-signal VAL_ entries and global VAL_TABLE_ definitions.
 class ValueTableEditorDialog : public QDialog
@@ -862,8 +1050,8 @@ void MainWindow::createLayout()
     connect(hierarchyTree_, &QTreeWidget::itemSelectionChanged, this, &MainWindow::onTreeSelectionChanged);
 
     messageTable_ = new QTableWidget(this);
-    messageTable_->setColumnCount(7);
-    messageTable_->setHorizontalHeaderLabels({"Name", "Type", "ID", "DLC", "Cycle Time", "Transmitter", "Comment"});
+    messageTable_->setColumnCount(8);
+    messageTable_->setHorizontalHeaderLabels({"Name", "Type", "ID", "DLC", "Cycle Time", "Transmitter", "Comment", "Attributes"});
     messageTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     messageTable_->horizontalHeader()->setStretchLastSection(true);
     messageTable_->horizontalHeader()->setSectionsClickable(true);
@@ -888,24 +1076,37 @@ void MainWindow::createLayout()
     connect(messageTable_, &QTableWidget::itemSelectionChanged, this, &MainWindow::onMessageSelectionChanged);
     connect(messageTable_, &QTableWidget::itemChanged,          this, &MainWindow::onMessageTableItemChanged);
     connect(messageTable_, &QTableWidget::cellClicked, this, [this](int row, int col) {
-        if (col != 6) { return; }
         auto* nameItem = messageTable_->item(row, 0);
         if (!nameItem) { return; }
         const int msgIndex = nameItem->data(Qt::UserRole).toInt();
         if (msgIndex < 0 || msgIndex >= database_.messages.size()) { return; }
-        const QString current = database_.messages.at(msgIndex).comment;
-        openCommentEditor(this, current, [this, row, msgIndex](const QString& text) {
-            if (msgIndex < 0 || msgIndex >= database_.messages.size()) { return; }
-            database_.messages[msgIndex].comment = text;
-            isDirty_ = true;
-            auto* cell = messageTable_->item(row, 6);
-            if (cell) { const QSignalBlocker b(messageTable_); cell->setText(text); }
-        });
+        if (col == 6) {
+            const QString current = database_.messages.at(msgIndex).comment;
+            openCommentEditor(this, current, [this, row, msgIndex](const QString& text) {
+                if (msgIndex < 0 || msgIndex >= database_.messages.size()) { return; }
+                database_.messages[msgIndex].comment = text;
+                isDirty_ = true;
+                auto* cell = messageTable_->item(row, 6);
+                if (cell) { const QSignalBlocker b(messageTable_); cell->setText(text); }
+            });
+        } else if (col == 7) {
+            DbcMessage& msg = database_.messages[msgIndex];
+            QList<DbcAttributeDef> defs;
+            for (const DbcAttributeDef& d : database_.attributes)
+                if (d.objectType == DbcAttributeDef::ObjectType::Message) defs.append(d);
+            ObjectAttrDialog dlg(
+                QString("Attributes \u2013 Message: %1").arg(msg.name),
+                defs, msg.attrValues, this);
+            if (dlg.exec() == QDialog::Accepted) {
+                msg.attrValues = dlg.result();
+                isDirty_ = true;
+            }
+        }
     });
 
     signalTable_ = new QTableWidget(this);
-    signalTable_->setColumnCount(13);
-    signalTable_->setHorizontalHeaderLabels({"Name", "Mode", "Startbit", "Length [Bit]", "Byte Order", "Type", "Factor", "Offset", "Minimum", "Maximum", "Unit", "Comment", "Value Table"});
+    signalTable_->setColumnCount(14);
+    signalTable_->setHorizontalHeaderLabels({"Name", "Mode", "Startbit", "Length [Bit]", "Byte Order", "Type", "Factor", "Offset", "Minimum", "Maximum", "Unit", "Comment", "Value Table", "Attributes"});
     signalTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     signalTable_->horizontalHeader()->setStretchLastSection(true);
     signalTable_->horizontalHeader()->setSectionsClickable(true);
@@ -978,27 +1179,48 @@ void MainWindow::createLayout()
     connect(signalTable_, &QTableWidget::itemChanged,
             this, &MainWindow::onSignalTableItemChanged);
     connect(signalTable_, &QTableWidget::cellClicked, this, [this](int row, int col) {
-        if (col != 11) { return; }
-        if (currentMessageIndex_ < 0 || currentMessageIndex_ >= database_.messages.size()) { return; }
-        auto* nameItem = signalTable_->item(row, 0);
-        if (!nameItem) { return; }
-        const QString sigName = nameItem->text();
-        auto& signalList = database_.messages[currentMessageIndex_].signalList;
-        int si = -1;
-        for (int i = 0; i < signalList.size(); ++i) {
-            if (signalList.at(i).name == sigName) { si = i; break; }
-        }
-        if (si < 0) { return; }
-        const QString current = signalList.at(si).comment;
-        openCommentEditor(this, current, [this, row, si](const QString& text) {
+        if (col == 11) {
             if (currentMessageIndex_ < 0 || currentMessageIndex_ >= database_.messages.size()) { return; }
-            auto& sl = database_.messages[currentMessageIndex_].signalList;
-            if (si < 0 || si >= sl.size()) { return; }
-            sl[si].comment = text;
-            isDirty_ = true;
-            auto* cell = signalTable_->item(row, 11);
-            if (cell) { const QSignalBlocker b(signalTable_); cell->setText(text); }
-        });
+            auto* nameItem = signalTable_->item(row, 0);
+            if (!nameItem) { return; }
+            const QString sigName = nameItem->text();
+            auto& signalList = database_.messages[currentMessageIndex_].signalList;
+            int si = -1;
+            for (int i = 0; i < signalList.size(); ++i) {
+                if (signalList.at(i).name == sigName) { si = i; break; }
+            }
+            if (si < 0) { return; }
+            const QString current = signalList.at(si).comment;
+            openCommentEditor(this, current, [this, row, si](const QString& text) {
+                if (currentMessageIndex_ < 0 || currentMessageIndex_ >= database_.messages.size()) { return; }
+                auto& sl = database_.messages[currentMessageIndex_].signalList;
+                if (si < 0 || si >= sl.size()) { return; }
+                sl[si].comment = text;
+                isDirty_ = true;
+                auto* cell = signalTable_->item(row, 11);
+                if (cell) { const QSignalBlocker b(signalTable_); cell->setText(text); }
+            });
+        } else if (col == 13) {
+            if (currentMessageIndex_ < 0 || currentMessageIndex_ >= database_.messages.size()) { return; }
+            auto* nameItem = signalTable_->item(row, 0);
+            if (!nameItem) { return; }
+            const QString sigName = nameItem->text();
+            DbcMessage& msg = database_.messages[currentMessageIndex_];
+            for (DbcSignal& sig : msg.signalList) {
+                if (sig.name != sigName) { continue; }
+                QList<DbcAttributeDef> defs;
+                for (const DbcAttributeDef& d : database_.attributes)
+                    if (d.objectType == DbcAttributeDef::ObjectType::Signal) defs.append(d);
+                ObjectAttrDialog dlg(
+                    QString("Attributes \u2013 Signal: %1 (in %2)").arg(sigName, msg.name),
+                    defs, sig.attrValues, this);
+                if (dlg.exec() == QDialog::Accepted) {
+                    sig.attrValues = dlg.result();
+                    isDirty_ = true;
+                }
+                break;
+            }
+        }
     });
 
     // Deselect when clicking empty space in the signal table.
@@ -1053,8 +1275,8 @@ void MainWindow::createLayout()
     tableSplitter->setStretchFactor(1, 1);
 
     nodesViewTable_ = new QTableWidget(this);
-    nodesViewTable_->setColumnCount(3);
-    nodesViewTable_->setHorizontalHeaderLabels({"Name", "Address", "Comment"});
+    nodesViewTable_->setColumnCount(4);
+    nodesViewTable_->setHorizontalHeaderLabels({"Name", "Address", "Comment", "Attributes"});
     nodesViewTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     nodesViewTable_->horizontalHeader()->setStretchLastSection(true);
     nodesViewTable_->horizontalHeader()->setSectionsClickable(true);
@@ -1081,29 +1303,45 @@ void MainWindow::createLayout()
         contextMenu.exec(nodesViewTable_->viewport()->mapToGlobal(pos));
     });
     connect(nodesViewTable_, &QTableWidget::cellClicked, this, [this](int row, int col) {
-        if (col != 2) { return; }
         auto* nameItem = nodesViewTable_->item(row, 0);
         if (!nameItem) { return; }
         const QString nodeName = nameItem->text();
-        QString current;
-        for (const DbcNode& n : database_.nodes) {
-            if (n.name == nodeName) { current = n.comment; break; }
-        }
-        openCommentEditor(this, current, [this, row, nodeName](const QString& text) {
+        if (col == 2) {
+            QString current;
+            for (const DbcNode& n : database_.nodes) {
+                if (n.name == nodeName) { current = n.comment; break; }
+            }
+            openCommentEditor(this, current, [this, row, nodeName](const QString& text) {
+                for (DbcNode& n : database_.nodes) {
+                    if (n.name != nodeName) { continue; }
+                    n.comment = text;
+                    isDirty_ = true;
+                    auto* cell = nodesViewTable_->item(row, 2);
+                    if (cell) { cell->setText(text); }
+                    break;
+                }
+            });
+        } else if (col == 3) {
             for (DbcNode& n : database_.nodes) {
                 if (n.name != nodeName) { continue; }
-                n.comment = text;
-                isDirty_ = true;
-                auto* cell = nodesViewTable_->item(row, 2);
-                if (cell) { cell->setText(text); }
+                QList<DbcAttributeDef> defs;
+                for (const DbcAttributeDef& d : database_.attributes)
+                    if (d.objectType == DbcAttributeDef::ObjectType::Node) defs.append(d);
+                ObjectAttrDialog dlg(
+                    QString("Attributes \u2013 Node: %1").arg(nodeName),
+                    defs, n.attrValues, this);
+                if (dlg.exec() == QDialog::Accepted) {
+                    n.attrValues = dlg.result();
+                    isDirty_ = true;
+                }
                 break;
             }
-        });
+        }
     });
 
     messagesViewTable_ = new QTableWidget(this);
-    messagesViewTable_->setColumnCount(7);
-    messagesViewTable_->setHorizontalHeaderLabels({"Name", "ID", "ID-Format", "DLC", "Cycle Time", "Transmitter", "Comment"});
+    messagesViewTable_->setColumnCount(8);
+    messagesViewTable_->setHorizontalHeaderLabels({"Name", "ID", "ID-Format", "DLC", "Cycle Time", "Transmitter", "Comment", "Attributes"});
     messagesViewTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     messagesViewTable_->horizontalHeader()->setStretchLastSection(true);
     messagesViewTable_->horizontalHeader()->setSectionsClickable(true);
@@ -1131,29 +1369,45 @@ void MainWindow::createLayout()
         contextMenu.exec(messagesViewTable_->viewport()->mapToGlobal(pos));
     });
     connect(messagesViewTable_, &QTableWidget::cellClicked, this, [this](int row, int col) {
-        if (col != 6) { return; }
         auto* nameItem = messagesViewTable_->item(row, 0);
         if (!nameItem) { return; }
         const QString msgName = nameItem->text();
-        QString current;
-        for (const DbcMessage& m : database_.messages) {
-            if (m.name == msgName) { current = m.comment; break; }
-        }
-        openCommentEditor(this, current, [this, row, msgName](const QString& text) {
+        if (col == 6) {
+            QString current;
+            for (const DbcMessage& m : database_.messages) {
+                if (m.name == msgName) { current = m.comment; break; }
+            }
+            openCommentEditor(this, current, [this, row, msgName](const QString& text) {
+                for (DbcMessage& m : database_.messages) {
+                    if (m.name != msgName) { continue; }
+                    m.comment = text;
+                    isDirty_ = true;
+                    auto* cell = messagesViewTable_->item(row, 6);
+                    if (cell) { cell->setText(text); }
+                    break;
+                }
+            });
+        } else if (col == 7) {
             for (DbcMessage& m : database_.messages) {
                 if (m.name != msgName) { continue; }
-                m.comment = text;
-                isDirty_ = true;
-                auto* cell = messagesViewTable_->item(row, 6);
-                if (cell) { cell->setText(text); }
+                QList<DbcAttributeDef> defs;
+                for (const DbcAttributeDef& d : database_.attributes)
+                    if (d.objectType == DbcAttributeDef::ObjectType::Message) defs.append(d);
+                ObjectAttrDialog dlg(
+                    QString("Attributes \u2013 Message: %1").arg(msgName),
+                    defs, m.attrValues, this);
+                if (dlg.exec() == QDialog::Accepted) {
+                    m.attrValues = dlg.result();
+                    isDirty_ = true;
+                }
                 break;
             }
-        });
+        }
     });
 
     signalsViewTable_ = new QTableWidget(this);
-    signalsViewTable_->setColumnCount(12);
-    signalsViewTable_->setHorizontalHeaderLabels({"Name", "Length", "Byte Order", "Value Type", "Factor", "Offset", "Minimum", "Maximum", "Unit", "ValueTable", "Comment", "Message(s)"});
+    signalsViewTable_->setColumnCount(13);
+    signalsViewTable_->setHorizontalHeaderLabels({"Name", "Length", "Byte Order", "Value Type", "Factor", "Offset", "Minimum", "Maximum", "Unit", "ValueTable", "Comment", "Message(s)", "Attributes"});
     signalsViewTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     signalsViewTable_->horizontalHeader()->setStretchLastSection(true);
     signalsViewTable_->horizontalHeader()->setSectionsClickable(true);
@@ -1223,33 +1477,53 @@ void MainWindow::createLayout()
     // Click Comment column (col 10) in the signals view to open the multi-line editor.
     connect(signalsViewTable_, &QTableWidget::cellClicked,
             this, [this](int row, int col) {
-        if (col != 10) { return; }
         auto* nameItem = signalsViewTable_->item(row, 0);
         if (!nameItem) { return; }
         const QString sigName = nameItem->text();
         const QString msgName = nameItem->data(Qt::UserRole).toString();
-        QString current;
-        for (const DbcMessage& m : database_.messages) {
-            if (m.name != msgName) { continue; }
-            for (const DbcSignal& sig : m.signalList) {
-                if (sig.name == sigName) { current = sig.comment; break; }
+        if (col == 10) {
+            QString current;
+            for (const DbcMessage& m : database_.messages) {
+                if (m.name != msgName) { continue; }
+                for (const DbcSignal& sig : m.signalList) {
+                    if (sig.name == sigName) { current = sig.comment; break; }
+                }
+                break;
             }
-            break;
-        }
-        openCommentEditor(this, current, [this, row, sigName, msgName](const QString& text) {
+            openCommentEditor(this, current, [this, row, sigName, msgName](const QString& text) {
+                for (DbcMessage& m : database_.messages) {
+                    if (m.name != msgName) { continue; }
+                    for (DbcSignal& sig : m.signalList) {
+                        if (sig.name != sigName) { continue; }
+                        sig.comment = text;
+                        isDirty_ = true;
+                        auto* cell = signalsViewTable_->item(row, 10);
+                        if (cell) { cell->setText(text); }
+                        break;
+                    }
+                    break;
+                }
+            });
+        } else if (col == 12) {
             for (DbcMessage& m : database_.messages) {
                 if (m.name != msgName) { continue; }
                 for (DbcSignal& sig : m.signalList) {
                     if (sig.name != sigName) { continue; }
-                    sig.comment = text;
-                    isDirty_ = true;
-                    auto* cell = signalsViewTable_->item(row, 10);
-                    if (cell) { cell->setText(text); }
-                    break;
+                    QList<DbcAttributeDef> defs;
+                    for (const DbcAttributeDef& d : database_.attributes)
+                        if (d.objectType == DbcAttributeDef::ObjectType::Signal) defs.append(d);
+                    ObjectAttrDialog dlg(
+                        QString("Attributes \u2013 Signal: %1 (in %2)").arg(sigName, msgName),
+                        defs, sig.attrValues, this);
+                    if (dlg.exec() == QDialog::Accepted) {
+                        sig.attrValues = dlg.result();
+                        isDirty_ = true;
+                    }
+                    return;
                 }
                 break;
             }
-        });
+        }
     });
 
     // Double-click ValueTable column (col 9) in the signals view to open the editor.
@@ -1585,6 +1859,12 @@ void MainWindow::createLayout()
             pf->addRow("Default:", attrDefaultNumEdit_);
             pf->addRow("Minimum:", attrMinEdit_);
             pf->addRow("Maximum:", attrMaxEdit_);
+            attrValidationLabel_ = new QLabel(pg);
+            attrValidationLabel_->setWordWrap(true);
+            attrValidationLabel_->setStyleSheet("color: red;");
+            attrValidationLabel_->setAlignment(Qt::AlignCenter);
+            attrValidationLabel_->hide();
+            pf->addRow(attrValidationLabel_);
             attrValueStack_->addWidget(pg); // page 0
         }
 
@@ -1651,7 +1931,20 @@ void MainWindow::createLayout()
         // Wire form changes → model update
         connect(attrNameEdit_, &QLineEdit::textEdited, this, &MainWindow::onAttrFieldChanged);
         connect(attrObjTypeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
-            if (!attrFormUpdating_) { onAttrFieldChanged(); }
+            if (attrFormUpdating_) { return; }
+            if (currentAttrIndex_ < 0 || currentAttrIndex_ >= database_.attributes.size()) { return; }
+            // Update the objectType in the model first.
+            DbcAttributeDef& attr = database_.attributes[currentAttrIndex_];
+            attr.objectType = static_cast<DbcAttributeDef::ObjectType>(attrObjTypeCombo_->currentIndex());
+            // Clear default / min / max so the user must re-enter values
+            // appropriate for the new object type.
+            attr.defaultValue.clear();
+            attr.minimum.clear();
+            attr.maximum.clear();
+            isDirty_ = true;
+            // Repopulate the form from the (now cleared) model — this is the
+            // canonical way to keep the UI in sync and will blank the fields.
+            refreshAttrFormFromModel();
         });
         connect(attrValueTypeCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
             attrValueStack_->setCurrentIndex(MainWindow::attrStackPageForValueTypeIndex(idx));
@@ -1665,6 +1958,48 @@ void MainWindow::createLayout()
         connect(attrMinEdit_,         &QLineEdit::textEdited, this, &MainWindow::onAttrFieldChanged);
         connect(attrMaxEdit_,         &QLineEdit::textEdited, this, &MainWindow::onAttrFieldChanged);
         connect(attrDefaultStrEdit_,  &QLineEdit::textEdited, this, &MainWindow::onAttrFieldChanged);
+
+        // Validate format on focus-out for each numeric field.
+        // We need a helper to keep the lambda terse.
+        auto connectNumericValidation = [this](QLineEdit* field, const QString& fieldLabel) {
+            connect(field, &QLineEdit::editingFinished, this, [this, field, fieldLabel]() {
+                if (attrFormUpdating_) { return; }
+                const QString valStr = field->text().trimmed();
+                if (valStr.isEmpty()) { return; }
+                const int vtIdx = attrValueTypeCombo_->currentIndex();
+                // 0=Integer, 1=Float, 4=Hex → numeric pages;  2/3 never shown on page 0
+                QString errMsg;
+                if (vtIdx == 1) { // Float
+                    bool ok = false;
+                    valStr.toDouble(&ok);
+                    if (!ok)
+                        errMsg = QString("'%1': \"%2\" is not a valid floating-point number.")
+                                     .arg(fieldLabel, valStr);
+                } else if (vtIdx == 4) { // Hex
+                    bool ok = false;
+                    valStr.toLongLong(&ok, 0); // base-0 handles 0x prefix
+                    if (!ok)
+                        errMsg = QString("'%1': \"%2\" is not a valid hexadecimal integer (e.g. 0x1F or 31).")
+                                     .arg(fieldLabel, valStr);
+                } else { // Integer (vtIdx == 0)
+                    bool ok = false;
+                    valStr.toLongLong(&ok);
+                    if (!ok)
+                        errMsg = QString("'%1': \"%2\" is not a valid integer.")
+                                     .arg(fieldLabel, valStr);
+                }
+                if (!errMsg.isEmpty()) {
+                    QTimer::singleShot(0, this, [this, field, errMsg]() {
+                        QMessageBox::warning(this, "Invalid Value", errMsg);
+                        field->setFocus();
+                        field->selectAll();
+                    });
+                }
+            });
+        };
+        connectNumericValidation(attrDefaultNumEdit_, "Default");
+        connectNumericValidation(attrMinEdit_,        "Minimum");
+        connectNumericValidation(attrMaxEdit_,        "Maximum");
         connect(attrEnumDefaultCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
             if (!attrFormUpdating_) { onAttrFieldChanged(); }
         });
@@ -1795,6 +2130,18 @@ void MainWindow::refreshHierarchy()
     hierarchyTree_->setUpdatesEnabled(false);
     hierarchyTree_->clear();
 
+    // Pre-compute which object types have applicable attribute definitions.
+    // "Attributes" children are only added when there are defs to edit.
+    bool hasNodeAttrs = false, hasMsgAttrs = false, hasSigAttrs = false;
+    for (const DbcAttributeDef& def : database_.attributes) {
+        if (def.objectType == DbcAttributeDef::ObjectType::Node)    hasNodeAttrs = true;
+        if (def.objectType == DbcAttributeDef::ObjectType::Message)  hasMsgAttrs  = true;
+        if (def.objectType == DbcAttributeDef::ObjectType::Signal)   hasSigAttrs  = true;
+    }
+
+    // Qt::UserRole   = primary index data (same encoding as before for normal items)
+    // Qt::UserRole+1 = 0 (normal) | 1 (node attrs) | 2 (msg attrs) | 3 (sig attrs)
+
     // Build sorted index lists so the tree displays items alphabetically
     // without reordering the underlying database_ arrays.
     auto* rootNodes = new QTreeWidgetItem(hierarchyTree_, QStringList{"Nodes"});
@@ -1806,6 +2153,11 @@ void MainWindow::refreshHierarchy()
     for (int i : nodeOrder) {
         auto* nodeItem = new QTreeWidgetItem(rootNodes, QStringList{database_.nodes.at(i).name});
         nodeItem->setData(0, Qt::UserRole, -1000);
+        if (hasNodeAttrs) {
+            auto* attrItem = new QTreeWidgetItem(nodeItem, QStringList{"Attributes"});
+            attrItem->setData(0, Qt::UserRole,   i);   // nodeIndex
+            attrItem->setData(0, Qt::UserRole+1, 1);   // type=node attrs
+        }
     }
 
     auto* rootMessages = new QTreeWidgetItem(hierarchyTree_, QStringList{"Messages"});
@@ -1818,6 +2170,11 @@ void MainWindow::refreshHierarchy()
         const DbcMessage& msg = database_.messages.at(i);
         auto* msgItem = new QTreeWidgetItem(rootMessages, QStringList{QString("%1 (0x%2)").arg(msg.name, QString::number(msg.id, 16).toUpper())});
         msgItem->setData(0, Qt::UserRole, i + 1);
+        if (hasMsgAttrs) {
+            auto* attrItem = new QTreeWidgetItem(msgItem, QStringList{"Attributes"});
+            attrItem->setData(0, Qt::UserRole,   i);   // msgIndex
+            attrItem->setData(0, Qt::UserRole+1, 2);   // type=msg attrs
+        }
     }
 
     auto* rootSignals = new QTreeWidgetItem(hierarchyTree_, QStringList{"Signals"});
@@ -1836,6 +2193,11 @@ void MainWindow::refreshHierarchy()
     for (const SigRef& ref : allSigs) {
         auto* sigItem = new QTreeWidgetItem(rootSignals, QStringList{ref.name});
         sigItem->setData(0, Qt::UserRole, ((ref.mi + 1) << 16) | (ref.si + 1));
+        if (hasSigAttrs) {
+            auto* attrItem = new QTreeWidgetItem(sigItem, QStringList{"Attributes"});
+            attrItem->setData(0, Qt::UserRole,   (ref.mi << 16) | ref.si);  // packed indices
+            attrItem->setData(0, Qt::UserRole+1, 3);                          // type=sig attrs
+        }
     }
 
     hierarchyTree_->collapseAll();
@@ -1866,6 +2228,12 @@ void MainWindow::refreshMessageTable()
             auto* ci = new QTableWidgetItem(msg.comment);
             ci->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             messageTable_->setItem(row, 6, ci);
+        }
+        {
+            auto* ai = new QTableWidgetItem("Edit...");
+            ai->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            ai->setForeground(QBrush(QColor("#0057b8")));
+            messageTable_->setItem(row, 7, ai);
         }
     }
 
@@ -2110,6 +2478,14 @@ void MainWindow::refreshSignalTable()
                 }
             });
             signalTable_->setCellWidget(row, 12, vtBtn);
+        }
+
+        // ── Attributes – clickable cell (col 13) ─────────────────────────
+        {
+            auto* ai = new QTableWidgetItem("Edit...");
+            ai->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            ai->setForeground(QBrush(QColor("#0057b8")));
+            signalTable_->setItem(row, 13, ai);
         }
     }
 
@@ -2385,6 +2761,12 @@ void MainWindow::refreshNodesView()
             ci->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             nodesViewTable_->setItem(row, 2, ci);
         }
+        {
+            auto* ai = new QTableWidgetItem("Edit...");
+            ai->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            ai->setForeground(QBrush(QColor("#0057b8")));
+            nodesViewTable_->setItem(row, 3, ai);
+        }
     }
     nodesViewTable_->setSortingEnabled(wasSorting);
 }
@@ -2413,6 +2795,12 @@ void MainWindow::refreshMessagesView()
             auto* ci = new QTableWidgetItem(msg.comment);
             ci->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             messagesViewTable_->setItem(row, 6, ci);
+        }
+        {
+            auto* ai = new QTableWidgetItem("Edit...");
+            ai->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            ai->setForeground(QBrush(QColor("#0057b8")));
+            messagesViewTable_->setItem(row, 7, ai);
         }
     }
     messagesViewTable_->setSortingEnabled(wasSorting);
@@ -2470,6 +2858,12 @@ void MainWindow::refreshSignalsView()
             }
             // Col 11 – plain text item; the delegate creates the combo on edit.
             signalsViewTable_->setItem(row, 11, new QTableWidgetItem(msg.name));
+            {
+                auto* ai = new QTableWidgetItem("Edit...");
+                ai->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                ai->setForeground(QBrush(QColor("#0057b8")));
+                signalsViewTable_->setItem(row, 12, ai);
+            }
 
             ++row;
         }
@@ -3382,6 +3776,75 @@ void MainWindow::onTreeSelectionChanged()
     }
 
     QTreeWidgetItem* selectedItem = selectedItems.first();
+
+    // ── "Attributes" child items (Qt::UserRole+1 != 0) ─────────────────────
+    const int attrType = selectedItem->data(0, Qt::UserRole+1).toInt();
+    if (attrType != 0) {
+        const int packed = selectedItem->data(0, Qt::UserRole).toInt();
+
+        if (attrType == 1) {
+            // Node attributes
+            const int nodeIdx = packed;
+            if (nodeIdx < 0 || nodeIdx >= database_.nodes.size()) return;
+            DbcNode& node = database_.nodes[nodeIdx];
+
+            QList<DbcAttributeDef> defs;
+            for (const DbcAttributeDef& d : database_.attributes)
+                if (d.objectType == DbcAttributeDef::ObjectType::Node) defs.append(d);
+
+            ObjectAttrDialog dlg(
+                QString("Attributes \u2013 Node: %1").arg(node.name),
+                defs, node.attrValues, this);
+            if (dlg.exec() == QDialog::Accepted) {
+                node.attrValues = dlg.result();
+                isDirty_ = true;
+            }
+
+        } else if (attrType == 2) {
+            // Message attributes
+            const int msgIdx = packed;
+            if (msgIdx < 0 || msgIdx >= database_.messages.size()) return;
+            DbcMessage& msg = database_.messages[msgIdx];
+
+            QList<DbcAttributeDef> defs;
+            for (const DbcAttributeDef& d : database_.attributes)
+                if (d.objectType == DbcAttributeDef::ObjectType::Message) defs.append(d);
+
+            ObjectAttrDialog dlg(
+                QString("Attributes \u2013 Message: %1").arg(msg.name),
+                defs, msg.attrValues, this);
+            if (dlg.exec() == QDialog::Accepted) {
+                msg.attrValues = dlg.result();
+                isDirty_ = true;
+            }
+
+        } else if (attrType == 3) {
+            // Signal attributes — packed = (msgIdx << 16) | sigIdx
+            const int msgIdx = (packed >> 16) & 0xFFFF;
+            const int sigIdx = packed & 0xFFFF;
+            if (msgIdx < 0 || msgIdx >= database_.messages.size()) return;
+            DbcMessage& msg = database_.messages[msgIdx];
+            if (sigIdx < 0 || sigIdx >= msg.signalList.size()) return;
+            DbcSignal& sig = msg.signalList[sigIdx];
+
+            QList<DbcAttributeDef> defs;
+            for (const DbcAttributeDef& d : database_.attributes)
+                if (d.objectType == DbcAttributeDef::ObjectType::Signal) defs.append(d);
+
+            ObjectAttrDialog dlg(
+                QString("Attributes \u2013 Signal: %1 (in %2)").arg(sig.name, msg.name),
+                defs, sig.attrValues, this);
+            if (dlg.exec() == QDialog::Accepted) {
+                sig.attrValues = dlg.result();
+                isDirty_ = true;
+            }
+        }
+
+        // Deselect the "Attributes" item so the user can click it again.
+        hierarchyTree_->clearSelection();
+        return;
+    }
+
     if (!selectedItem->parent()) {
         const QString rootName = selectedItem->text(0);
         if (rootName == "Nodes") {
@@ -3747,6 +4210,8 @@ void MainWindow::refreshAttrFormFromModel()
     attrDefaultNumEdit_->setText(attr.defaultValue);
     attrMinEdit_->setText(attr.minimum);
     attrMaxEdit_->setText(attr.maximum);
+    // Hide the validation warning whenever the form is refreshed from model.
+    if (attrValidationLabel_) { attrValidationLabel_->hide(); }
 
     // String page
     attrDefaultStrEdit_->setText(attr.defaultValue);
@@ -3827,6 +4292,44 @@ void MainWindow::updateModelFromAttrForm()
             attr.maximum.clear();
             break;
     }
+
+    // ── Validate default is within [min, max] for numeric types ─────────────
+    if (attrValidationLabel_) {
+        QString errMsg;
+        if (attr.valueType == DbcAttributeDef::ValueType::Integer ||
+            attr.valueType == DbcAttributeDef::ValueType::Hex) {
+            bool okD = false, okMn = false, okMx = false;
+            const qlonglong defV = attr.defaultValue.toLongLong(&okD, 0);
+            const qlonglong mnV  = attr.minimum.toLongLong(&okMn, 0);
+            const qlonglong mxV  = attr.maximum.toLongLong(&okMx, 0);
+            if (okD && okMn && okMx) {
+                if (mnV > mxV)
+                    errMsg = "Minimum must be \u2264 Maximum.";
+                else if (defV < mnV || defV > mxV)
+                    errMsg = QString("Default (%1) is outside [%2, %3].")
+                        .arg(attr.defaultValue, attr.minimum, attr.maximum);
+            }
+        } else if (attr.valueType == DbcAttributeDef::ValueType::Float) {
+            bool okD = false, okMn = false, okMx = false;
+            const double defV = attr.defaultValue.toDouble(&okD);
+            const double mnV  = attr.minimum.toDouble(&okMn);
+            const double mxV  = attr.maximum.toDouble(&okMx);
+            if (okD && okMn && okMx) {
+                if (mnV > mxV)
+                    errMsg = "Minimum must be \u2264 Maximum.";
+                else if (defV < mnV || defV > mxV)
+                    errMsg = QString("Default (%1) is outside [%2, %3].")
+                        .arg(attr.defaultValue, attr.minimum, attr.maximum);
+            }
+        }
+        if (errMsg.isEmpty()) {
+            attrValidationLabel_->hide();
+        } else {
+            attrValidationLabel_->setText(errMsg);
+            attrValidationLabel_->show();
+        }
+    }
+
     isDirty_ = true;
 }
 

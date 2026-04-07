@@ -80,6 +80,9 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
     QRegularExpression signalRegex(
         R"(^SG_\s+([A-Za-z_][A-Za-z0-9_]*)\s*(M|m(?:0x[0-9A-Fa-f]+|\d+))?\s*:\s*(\d+)\|(\d+)@([01])([+-])\s+\(([-+0-9\.eE]+),([-+0-9\.eE]+)\)\s+\[([-+0-9\.eE]+)\|([-+0-9\.eE]+)\]\s+\"([^\"]*)\"\s*(.*)$)");
     QRegularExpression cycleRegex(R"(^BA_\s+"GenMsgCycleTime"\s+BO_\s+(\d+)\s+(\d+)\s*;\s*$)");
+    QRegularExpression baNodeRe(R"RE(^BA_\s+"([^"]+)"\s+BU_\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*?)\s*;\s*$)RE");
+    QRegularExpression baMsgRe(R"RE(^BA_\s+"([^"]+)"\s+BO_\s+(\d+)\s+(.*?)\s*;\s*$)RE");
+    QRegularExpression baSigRe(R"RE(^BA_\s+"([^"]+)"\s+SG_\s+(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*?)\s*;\s*$)RE");
     QRegularExpression messageCommentRegex(R"dbc(^CM_\s+BO_\s+(\d+)\s+"((?:\\"|[^"])*)"\s*;\s*$)dbc");
     QRegularExpression signalCommentRegex(R"dbc(^CM_\s+SG_\s+(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s+"((?:\\"|[^"])*)"\s*;\s*$)dbc");    QRegularExpression signalValueRegex(R"(^VAL_\s+(\d+)\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.*?)\s*;\s*$)");
     // BA_DEF_  [BU_|BO_|SG_]  "Name"  TYPE  [params] ;   (escaped strings — raw literals break on )" inside pattern)
@@ -230,6 +233,52 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
                 const int cycleMs = cycleMatch.captured(2).toInt();
                 const int idx = msgByRawId.value(rawId, -1);
                 if (idx >= 0) { database.messages[idx].cycleTimeMs = cycleMs; }
+                continue;
+            }
+
+            // Per-signal attribute value: BA_ "Name" SG_ msgId sigName value ;
+            // Check SG_ before BO_ because BO_ would also match SG_ lines without SG_ but they won't
+            const auto baSigMatch = baSigRe.match(line);
+            if (baSigMatch.hasMatch()) {
+                const QString attrName = baSigMatch.captured(1);
+                const quint32 rawId = static_cast<quint32>(baSigMatch.captured(2).toULongLong());
+                const QString sigName = baSigMatch.captured(3);
+                QString rawVal = baSigMatch.captured(4).trimmed();
+                if (rawVal.startsWith('"') && rawVal.endsWith('"') && rawVal.size() >= 2)
+                    rawVal = rawVal.mid(1, rawVal.size() - 2);
+                const int idx = msgByRawId.value(rawId, -1);
+                if (idx >= 0) {
+                    for (DbcSignal& sig : database.messages[idx].signalList) {
+                        if (sig.name == sigName) { sig.attrValues[attrName] = rawVal; break; }
+                    }
+                }
+                continue;
+            }
+
+            // Per-message attribute value: BA_ "Name" BO_ msgId value ;
+            const auto baMsgMatch = baMsgRe.match(line);
+            if (baMsgMatch.hasMatch()) {
+                const QString attrName = baMsgMatch.captured(1);
+                const quint32 rawId = static_cast<quint32>(baMsgMatch.captured(2).toULongLong());
+                QString rawVal = baMsgMatch.captured(3).trimmed();
+                if (rawVal.startsWith('"') && rawVal.endsWith('"') && rawVal.size() >= 2)
+                    rawVal = rawVal.mid(1, rawVal.size() - 2);
+                const int idx = msgByRawId.value(rawId, -1);
+                if (idx >= 0) { database.messages[idx].attrValues[attrName] = rawVal; }
+                continue;
+            }
+
+            // Per-node attribute value: BA_ "Name" BU_ nodeName value ;
+            const auto baNodeMatch = baNodeRe.match(line);
+            if (baNodeMatch.hasMatch()) {
+                const QString attrName = baNodeMatch.captured(1);
+                const QString nodeName = baNodeMatch.captured(2);
+                QString rawVal = baNodeMatch.captured(3).trimmed();
+                if (rawVal.startsWith('"') && rawVal.endsWith('"') && rawVal.size() >= 2)
+                    rawVal = rawVal.mid(1, rawVal.size() - 2);
+                for (DbcNode& node : database.nodes) {
+                    if (node.name == nodeName) { node.attrValues[attrName] = rawVal; break; }
+                }
                 continue;
             }
         }
@@ -550,6 +599,40 @@ bool DbcDocument::saveToFile(const QString& filePath, const DbcDatabase& databas
             }
         }
     }
+
+    // Build attr-name → valueType map for proper serialization of per-object values.
+    QHash<QString, DbcAttributeDef::ValueType> attrTypeMap;
+    for (const DbcAttributeDef& def : database.attributes) {
+        attrTypeMap[def.name] = def.valueType;
+    }
+    auto formatAttrVal = [&](const QString& attrName, const QString& val) -> QString {
+        const auto it = attrTypeMap.constFind(attrName);
+        if (it != attrTypeMap.constEnd() && it.value() == DbcAttributeDef::ValueType::String)
+            return "\"" + val + "\"";
+        return val;
+    };
+
+    // Per-node attribute values
+    for (const DbcNode& node : database.nodes) {
+        for (auto it = node.attrValues.cbegin(); it != node.attrValues.cend(); ++it)
+            out << "BA_ \"" << it.key() << "\" BU_ " << node.name
+                << " " << formatAttrVal(it.key(), it.value()) << ";\n";
+    }
+    // Per-message attribute values
+    for (const DbcMessage& msg : database.messages) {
+        for (auto it = msg.attrValues.cbegin(); it != msg.attrValues.cend(); ++it)
+            out << "BA_ \"" << it.key() << "\" BO_ " << rawIdFromMessage(msg)
+                << " " << formatAttrVal(it.key(), it.value()) << ";\n";
+    }
+    // Per-signal attribute values
+    for (const DbcMessage& msg : database.messages) {
+        for (const DbcSignal& sig : msg.signalList) {
+            for (auto it = sig.attrValues.cbegin(); it != sig.attrValues.cend(); ++it)
+                out << "BA_ \"" << it.key() << "\" SG_ " << rawIdFromMessage(msg)
+                    << " " << sig.name << " " << formatAttrVal(it.key(), it.value()) << ";\n";
+        }
+    }
+
     out << "\n";
 
     // VAL_ signal value definitions
