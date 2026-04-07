@@ -130,8 +130,20 @@ jobs:
         run: |
           tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
           artifact="QtDbcEditor-${tag}-${{ matrix.artifact-suffix }}"
-          macdeployqt build/QtDbcEditor.app -dmg
-          mv build/QtDbcEditor.dmg "$artifact"
+
+          # Deploy Qt frameworks; pass brew lib dir so macdeployqt resolves
+          # transitive dylib deps (libwebp, libsharpyuv, libbrotli, etc.)
+          macdeployqt build/QtDbcEditor.app \
+            -libpath="$(brew --prefix)/lib" \
+            -verbose=0
+
+          # Ad-hoc sign the whole bundle (no Apple Developer certificate needed in CI)
+          codesign --force --deep --sign - build/QtDbcEditor.app
+
+          # Build DMG from the deployed app bundle
+          hdiutil create -volname "QtDbcEditor" \
+            -srcfolder build/QtDbcEditor.app \
+            -ov -format UDZO "${artifact}"
           echo "ARTIFACT=$artifact" >> $GITHUB_ENV
 
       - name: Upload to Release
