@@ -248,24 +248,27 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
             continue;
         }
 
-        const auto messageMatch = messageRegex.match(line);
-        if (messageMatch.hasMatch()) {
-            DbcMessage message;
-            const quint32 rawId = static_cast<quint32>(messageMatch.captured(1).toULongLong());
-            message.isExtended = (rawId & 0x80000000u) != 0u || rawId > 0x7FFu;
-            message.id = message.isExtended ? (rawId & 0x1FFFFFFFu) : rawId;
-            message.name = messageMatch.captured(2);
-            message.dlc = messageMatch.captured(3).toInt();
-            message.transmitter = messageMatch.captured(4);
+        if (line.startsWith("BO_")) {
+            const auto messageMatch = messageRegex.match(line);
+            if (messageMatch.hasMatch()) {
+                DbcMessage message;
+                const quint32 rawId = static_cast<quint32>(messageMatch.captured(1).toULongLong());
+                message.isExtended = (rawId & 0x80000000u) != 0u || rawId > 0x7FFu;
+                message.id = message.isExtended ? (rawId & 0x1FFFFFFFu) : rawId;
+                message.name = messageMatch.captured(2);
+                message.dlc = messageMatch.captured(3).toInt();
+                message.transmitter = messageMatch.captured(4);
 
-            database.messages.append(message);
-            currentMessageIndex = database.messages.size() - 1;
-            msgByRawId.insert(rawIdFromMessage(database.messages.last()), currentMessageIndex);
-            continue;
+                database.messages.append(message);
+                currentMessageIndex = database.messages.size() - 1;
+                msgByRawId.insert(rawIdFromMessage(database.messages.last()), currentMessageIndex);
+                continue;
+            }
         }
 
-        const auto signalMatch = signalRegex.match(line);
-        if (signalMatch.hasMatch()) {
+        if (line.startsWith("SG_")) {
+            const auto signalMatch = signalRegex.match(line);
+            if (signalMatch.hasMatch()) {
             if (currentMessageIndex < 0 || currentMessageIndex >= database.messages.size()) {
                 error = QString("Signal found before any message at line %1").arg(lineNo);
                 return false;
@@ -312,20 +315,32 @@ bool DbcDocument::loadFromFile(const QString& filePath, DbcDatabase& outDatabase
             }
 
             database.messages[currentMessageIndex].signalList.append(dbcSig);
-            continue;
+                continue;
+            }
         }
     }
 
     // Auto-link signal value entries to named global VAL_TABLE_s by exact entry match.
+    // Build a hash of valuetable content fingerprint → name for O(1) lookup.
+    QHash<QString, QString> vtByContent;
+    for (const DbcValueTable& vt : database.valueTables) {
+        QString key;
+        key.reserve(vt.entries.size() * 12);
+        for (const DbcValueEntry& e : vt.entries) {
+            key += QString::number(e.rawValue) + '\x01' + e.label + '\x02';
+        }
+        vtByContent.insert(key, vt.name);
+    }
     for (DbcMessage& msg : database.messages) {
         for (DbcSignal& sig : msg.signalList) {
             if (sig.valueEntries.isEmpty()) { continue; }
-            for (const DbcValueTable& vt : database.valueTables) {
-                if (vt.entries == sig.valueEntries) {
-                    sig.valueTableName = vt.name;
-                    break;
-                }
+            QString key;
+            key.reserve(sig.valueEntries.size() * 12);
+            for (const DbcValueEntry& e : sig.valueEntries) {
+                key += QString::number(e.rawValue) + '\x01' + e.label + '\x02';
             }
+            const auto it = vtByContent.constFind(key);
+            if (it != vtByContent.constEnd()) { sig.valueTableName = it.value(); }
         }
     }
 

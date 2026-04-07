@@ -72,6 +72,7 @@ private:
 
 #include <QLineEdit>
 #include <algorithm>
+#include <numeric>
 
 namespace {
 const QRegularExpression kSymbolNameRegex("^[A-Za-z_][A-Za-z0-9_]*$");
@@ -1794,30 +1795,50 @@ void MainWindow::refreshHierarchy()
     hierarchyTree_->setUpdatesEnabled(false);
     hierarchyTree_->clear();
 
+    // Build sorted index lists so the tree displays items alphabetically
+    // without reordering the underlying database_ arrays.
     auto* rootNodes = new QTreeWidgetItem(hierarchyTree_, QStringList{"Nodes"});
-    for (const DbcNode& node : database_.nodes) {
-        auto* nodeItem = new QTreeWidgetItem(rootNodes, QStringList{node.name});
+    QVector<int> nodeOrder(database_.nodes.size());
+    std::iota(nodeOrder.begin(), nodeOrder.end(), 0);
+    std::sort(nodeOrder.begin(), nodeOrder.end(), [&](int a, int b) {
+        return database_.nodes.at(a).name.compare(database_.nodes.at(b).name, Qt::CaseInsensitive) < 0;
+    });
+    for (int i : nodeOrder) {
+        auto* nodeItem = new QTreeWidgetItem(rootNodes, QStringList{database_.nodes.at(i).name});
         nodeItem->setData(0, Qt::UserRole, -1000);
     }
 
     auto* rootMessages = new QTreeWidgetItem(hierarchyTree_, QStringList{"Messages"});
-    for (int i = 0; i < database_.messages.size(); ++i) {
+    QVector<int> msgOrder(database_.messages.size());
+    std::iota(msgOrder.begin(), msgOrder.end(), 0);
+    std::sort(msgOrder.begin(), msgOrder.end(), [&](int a, int b) {
+        return database_.messages.at(a).name.compare(database_.messages.at(b).name, Qt::CaseInsensitive) < 0;
+    });
+    for (int i : msgOrder) {
         const DbcMessage& msg = database_.messages.at(i);
         auto* msgItem = new QTreeWidgetItem(rootMessages, QStringList{QString("%1 (0x%2)").arg(msg.name, QString::number(msg.id, 16).toUpper())});
         msgItem->setData(0, Qt::UserRole, i + 1);
     }
 
     auto* rootSignals = new QTreeWidgetItem(hierarchyTree_, QStringList{"Signals"});
-    for (int i = 0; i < database_.messages.size(); ++i) {
-        const DbcMessage& msg = database_.messages.at(i);
-        for (int sigIndex = 0; sigIndex < msg.signalList.size(); ++sigIndex) {
-            const DbcSignal& sig = msg.signalList.at(sigIndex);
-            auto* sigItem = new QTreeWidgetItem(rootSignals, QStringList{sig.name});
-            sigItem->setData(0, Qt::UserRole, ((i + 1) << 16) | (sigIndex + 1));
+    // Collect all (msgIndex, sigIndex) pairs then sort by signal name.
+    struct SigRef { int mi; int si; QString name; };
+    QVector<SigRef> allSigs;
+    for (int mi = 0; mi < database_.messages.size(); ++mi) {
+        const DbcMessage& msg = database_.messages.at(mi);
+        for (int si = 0; si < msg.signalList.size(); ++si) {
+            allSigs.append({mi, si, msg.signalList.at(si).name});
         }
     }
+    std::sort(allSigs.begin(), allSigs.end(), [](const SigRef& a, const SigRef& b) {
+        return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+    });
+    for (const SigRef& ref : allSigs) {
+        auto* sigItem = new QTreeWidgetItem(rootSignals, QStringList{ref.name});
+        sigItem->setData(0, Qt::UserRole, ((ref.mi + 1) << 16) | (ref.si + 1));
+    }
 
-    hierarchyTree_->expandAll();
+    hierarchyTree_->collapseAll();
     hierarchyTree_->setUpdatesEnabled(true);
 }
 
