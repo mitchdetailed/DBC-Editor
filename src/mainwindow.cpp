@@ -115,20 +115,11 @@ bool validateDatabaseRules(const DbcDatabase& database, QString& error)
         }
         messageIds.insert(message.id);
 
-        // Signal names must be unique within a message, but the same name is
-        // allowed in different messages (standard DBC behaviour).
-        QSet<QString> signalNames;
         for (const DbcSignal& dbcSig : message.signalList) {
             if (!isValidSymbolName(dbcSig.name)) {
                 error = QString("Invalid signal name: %1\nAllowed pattern: [A-Za-z_][A-Za-z0-9_]*").arg(dbcSig.name);
                 return false;
             }
-
-            if (signalNames.contains(dbcSig.name)) {
-                error = QString("Duplicate signal name '%1' in message '%2'").arg(dbcSig.name, message.name);
-                return false;
-            }
-            signalNames.insert(dbcSig.name);
         }
     }
 
@@ -1589,17 +1580,6 @@ void MainWindow::createLayout()
 
                 for (DbcMessage& m : database_.messages) {
                     if (m.name == newMsgName) {
-                        for (const DbcSignal& s : m.signalList) {
-                            if (s.name == sigName) {
-                                QMessageBox::warning(nullptr, "Duplicate Signal Name",
-                                    QString("Error, signal: %1 already exists in Message %2.")
-                                        .arg(sigName, newMsgName));
-                                // Revert the item text back to the old message name.
-                                const QSignalBlocker blk(signalsViewTable_);
-                                item->setText(oldMsgName);
-                                return;
-                            }
-                        }
                         m.signalList.append(movedSig);
                         break;
                     }
@@ -2539,18 +2519,7 @@ void MainWindow::onSignalTableItemChanged(QTableWidgetItem* item)
                         "letters, digits, and underscores (A-Z, 0-9, _).").arg(text));
             return;
         }
-        // Signal names must be unique within the same message.
-        for (int si = 0; si < msg.signalList.size(); ++si) {
-            if (si == sigIndex) { continue; } // skip self
-            if (msg.signalList.at(si).name == text) {
-                const QSignalBlocker b(signalTable_);
-                item->setText(sig.name);
-                QMessageBox::warning(this, "Duplicate Signal Name",
-                    QString("Error, signal: %1 already exists in Message %2.")
-                        .arg(text, msg.name));
-                return;
-            }
-        }
+
         sig.name = text;
         needsLayoutRefresh = true; // signal name label in bit layout changes
 
@@ -3202,35 +3171,10 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
                 }
                 if (!found) { de->ignore(); return true; }
 
-                // Check for duplicate name in the target message before appending.
-                bool nameConflict = false;
                 for (DbcMessage& dstMsg : database_.messages) {
                     if (dstMsg.name != targetMsgName) { continue; }
-                    for (const DbcSignal& s : dstMsg.signalList) {
-                        if (s.name == sigName) {
-                            nameConflict = true;
-                            break;
-                        }
-                    }
-                    if (!nameConflict) {
-                        dstMsg.signalList.append(movedSig);
-                    }
+                    dstMsg.signalList.append(movedSig);
                     break;
-                }
-
-                if (nameConflict) {
-                    // Re-add the signal to the source message (it was already removed).
-                    for (DbcMessage& srcMsg : database_.messages) {
-                        if (srcMsg.name == sourceMsgName) {
-                            srcMsg.signalList.append(movedSig);
-                            break;
-                        }
-                    }
-                    QMessageBox::warning(nullptr, "Duplicate Signal Name",
-                        QString("Error, signal: %1 already exists in Message %2.")
-                            .arg(sigName, targetMsgName));
-                    de->ignore();
-                    return true;
                 }
 
                 isDirty_ = true;
