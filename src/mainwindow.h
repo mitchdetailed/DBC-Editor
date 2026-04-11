@@ -1,23 +1,20 @@
 #pragma once
 
-#include "bitlayoutwidget.h"
+#include "attributeswidget.h"
 #include "dbcmodel.h"
+#include "messageswidget.h"
+#include "nodeswidget.h"
+#include "overviewwidget.h"
+#include "signalswidget.h"
+#include "valuetableswidget.h"
 
 #include <QMainWindow>
-#include <QPoint>
 
 class QDockWidget;
 class QAction;
 class QMenu;
-class QComboBox;
-class QListWidget;
-class QTableWidget;
-class QTableWidgetItem;
-class QScrollArea;
-class QLineEdit;
 class QStackedWidget;
 class QTreeWidget;
-class QLabel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -26,9 +23,6 @@ class MainWindow : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
-
-protected:
-    bool eventFilter(QObject* obj, QEvent* event) override;
 
 private slots:
     void onNewDatabase();
@@ -45,6 +39,7 @@ private slots:
     void onDeleteMessage();
     void onDeleteMessageWithAttributes();
     void onAddSignal();
+    void onAddSignalForMessage(int messageIndex);
     void onDeleteSignalFromView();
     void onEditSelected();
     void onEditCommonAttributes();
@@ -60,24 +55,7 @@ private slots:
     void onOpenRecentFile();
     void onDeleteSelection();
 
-    void onMessageSelectionChanged();
-    void onMessageTableItemChanged(QTableWidgetItem* item);
     void onTreeSelectionChanged();
-    void onSignalTableItemChanged(QTableWidgetItem* item);
-    void onAddValueTable();
-    void onDeleteValueTable();
-    void onValueTableSelected();
-    void onAddValueTableEntry();
-    void onDeleteValueTableEntry();
-    void onValueTableEntryItemChanged(QTableWidgetItem* item);
-
-    void onAddAttribute();
-    void onDeleteAttribute();
-    void onAttributeSelected();
-    void onAddEnumValue();
-    void onDeleteEnumValue();
-    void onAttrEnumItemChanged(QTableWidgetItem* item);
-    void onAttrFieldChanged();
 
 private:
     void createActions();
@@ -87,23 +65,6 @@ private:
 
     void refreshAll();
     void refreshHierarchy();
-    void refreshMessageTable();
-    void refreshSignalTable();
-    void refreshMultiplexorSignalDropdown();
-    void refreshBitLayoutForMultiplexorSelection();
-    void refreshNodesView();
-    void refreshMessagesView();
-    void refreshSignalsView();
-
-    void refreshValueTablesView();
-    void sortAndRefreshEntries(int tableIndex);
-    void refreshAttributesView();
-    void refreshAttrFormFromModel();
-    void updateModelFromAttrForm();
-    void refreshAttrEnumCombo();
-    static int attrStackPageForValueTypeIndex(int vtComboIndex);
-    void setCurrentMessageIndex(int index);
-    int currentSelectedSignalIndex() const;
 
     bool ensureReadyToDiscard();
     bool loadDatabaseFromPath(const QString& path);
@@ -119,41 +80,16 @@ private:
     int currentMessageIndex_ = -1;
     ViewMode currentViewMode_ = ViewMode::Overview;
 
-    QStackedWidget* centerStack_ = nullptr;
-    QTreeWidget* hierarchyTree_ = nullptr;
-    QTableWidget* messageTable_ = nullptr;
-    QTableWidget* signalTable_ = nullptr;
-    QTableWidget* nodesViewTable_ = nullptr;
-    QTableWidget* messagesViewTable_ = nullptr;
-    QTableWidget* signalsViewTable_ = nullptr;
-    QListWidget*  valueTablesListWidget_   = nullptr;
-    QTableWidget* valueTablesEntriesTable_ = nullptr;
-    int           currentValueTableIndex_  = -1;
+    QStackedWidget*    centerStack_        = nullptr;
+    QTreeWidget*       hierarchyTree_      = nullptr;
+    OverviewWidget*    overviewWidget_     = nullptr;
+    NodesWidget*       nodesWidget_        = nullptr;
+    MessagesWidget*    messagesWidget_     = nullptr;
+    SignalsWidget*     signalsWidget_      = nullptr;
+    ValueTablesWidget* valueTablesWidget_  = nullptr;
+    AttributesWidget*  attributesWidget_   = nullptr;
 
-    // Attributes view
-    QListWidget*    attrListWidget_        = nullptr;
-    QWidget*        attrFormWidget_        = nullptr;
-    QLineEdit*      attrNameEdit_          = nullptr;
-    QComboBox*      attrObjTypeCombo_      = nullptr;
-    QComboBox*      attrValueTypeCombo_    = nullptr;
-    QStackedWidget* attrValueStack_        = nullptr;
-    QLineEdit*      attrDefaultNumEdit_    = nullptr;
-    QLineEdit*      attrMinEdit_           = nullptr;
-    QLineEdit*      attrMaxEdit_           = nullptr;
-    QLineEdit*      attrDefaultStrEdit_    = nullptr;
-    QComboBox*      attrEnumDefaultCombo_  = nullptr;
-    QTableWidget*   attrEnumTable_         = nullptr;
-    QLabel*         attrValidationLabel_   = nullptr;
-    int             currentAttrIndex_      = -1;
-    bool            attrFormUpdating_      = false;
-
-    // ── drag state (for custom drag initiation in eventFilter) ───────────────
-    QPoint        dragStartPos_;
-    QTableWidget* dragSourceTable_ = nullptr;
-
-    BitLayoutWidget* bitLayoutWidget_ = nullptr;
-    QDockWidget*     bitLayoutDock_   = nullptr;
-    QComboBox* multiplexorSignalCombo_ = nullptr;
+    QDockWidget* bitLayoutDock_ = nullptr;
 
     QAction* newAction_ = nullptr;
     QAction* openAction_ = nullptr;

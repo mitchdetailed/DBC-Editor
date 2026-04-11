@@ -14,10 +14,24 @@ add_executable(QtDbcEditor WIN32
     src/mainwindow.h
     src/mainwindow.cpp
     src/dbcmodel.h
+    src/dbcdialogs.h
+    src/dbcutil.h
     src/dbcdocument.h
     src/dbcdocument.cpp
     src/bitlayoutwidget.h
     src/bitlayoutwidget.cpp
+    src/attributeswidget.h
+    src/attributeswidget.cpp
+    src/valuetableswidget.h
+    src/valuetableswidget.cpp
+    src/nodeswidget.h
+    src/nodeswidget.cpp
+    src/messageswidget.h
+    src/messageswidget.cpp
+    src/signalswidget.h
+    src/signalswidget.cpp
+    src/overviewwidget.h
+    src/overviewwidget.cpp
 )
 
 target_link_libraries(QtDbcEditor PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
